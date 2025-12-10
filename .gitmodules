@@ -1,0 +1,3 @@
+[submodule "tupl_data_plane"]
+	path = tupl_data_plane
+	url = https://github.com/ElitroOrg/tupl_data_plane.git

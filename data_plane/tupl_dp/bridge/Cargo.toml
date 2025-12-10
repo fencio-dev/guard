@@ -1,0 +1,67 @@
+[package]
+name = "rule-bridge"
+version = "0.1.0"
+edition = "2021"
+authors = ["Data Plane Team"]
+description = "High-performance rule storage and query engine for multi-layer enforcement"
+license = "MIT"
+
+[dependencies]
+# Concurrency
+parking_lot = "0.12"
+
+# Random (for sampling in audit rules)
+rand = "0.8"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client for Management Plane encoding (rustls for deterministic TLS)
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+
+# JSON serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# UUID generation for telemetry
+uuid = { version = "1.0", features = ["v4"] }
+
+# Compression for hitlog rotation
+flate2 = "1.0"
+
+# SQLite persistence for hitlogs
+rusqlite = { version = "0.30", features = ["bundled", "serde_json"] }
+
+# Semantic sandbox CDylib (linked as rlib for in-process compare)
+semantic-sandbox = { path = "../../semantic-sandbox" }
+
+# gRPC server (tonic + prost)
+tonic = "0.12"
+prost = "0.13"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[dev-dependencies]
+# Testing
+criterion = "0.5"
+
+[lib]
+name = "bridge"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bridge-server"
+path = "src/main.rs"
+
+[[bench]]
+name = "query_benchmark"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[profile.bench]
+inherits = "release"

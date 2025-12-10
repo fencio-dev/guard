@@ -1,0 +1,81 @@
+services:
+  # AI Security Stack (Management Plane + Data Plane)
+  ai-security-stack:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile.security
+    container_name: ai-security-stack
+    ports:
+      - "127.0.0.1:8000:8000"  # Management Plane API (localhost only)
+      - "127.0.0.1:50051:50051" # Data Plane gRPC (localhost only)
+    environment:
+      - SEMANTIC_SANDBOX_LIB_PATH=/app/libs/libsemantic_sandbox.so
+      - GOOGLE_API_KEY=${GEMINI_API_KEY}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - SUPABASE_JWT_SECRET=${SUPABASE_JWT_SECRET}
+      - DATA_PLANE_GRPC_URL=localhost:50051
+      - MANAGEMENT_PLANE_URL=http://localhost:8000
+      - CHROMA_URL=http://chromadb:8000
+      - HITLOG_DIR=/var/hitlogs
+      - HITLOG_SQLITE_PATH=/var/hitlogs/hitlogs.db
+    volumes:
+      - security-data:/app/data
+      - security-models:/root/.cache/huggingface
+      - hitlogs:/var/hitlogs
+    depends_on:
+      - chromadb
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - gateway-network
+
+  console-ui:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile.console
+      args:
+        - VITE_API_BASE_URL=${VITE_API_BASE_URL:-https://platform.tupl.xyz/api}
+        - VITE_MANAGEMENT_PLANE_URL=${VITE_MANAGEMENT_PLANE_URL:-https://platform.tupl.xyz}
+        - VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
+        - VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY}
+    container_name: console-ui
+    ports:
+      - "127.0.0.1:8080:80" # Localhost only, Nginx proxies here
+    restart: unless-stopped
+    networks:
+      - gateway-network
+
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: security-chromadb
+    ports:
+      - "127.0.0.1:8002:8000"  # Localhost only
+    volumes:
+      - chromadb-data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    restart: unless-stopped
+
+    networks:
+      - gateway-network
+
+volumes:
+  chromadb-data:
+    driver: local
+  security-data:
+    driver: local
+  security-models:
+    driver: local
+  hitlogs:
+    driver: local
+
+networks:
+  gateway-network:
+    driver: bridge

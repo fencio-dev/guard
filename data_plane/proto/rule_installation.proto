@@ -1,0 +1,194 @@
+syntax = "proto3";
+
+package rule_installation;
+
+// Service for installing rules and enforcing intents
+service DataPlane {
+  // Install a batch of rules for an agent
+  rpc InstallRules(InstallRulesRequest) returns (InstallRulesResponse);
+
+  // Remove rules for an agent
+  rpc RemoveAgentRules(RemoveAgentRulesRequest) returns (RemoveAgentRulesResponse);
+
+  // Get current rule statistics
+  rpc GetRuleStats(GetRuleStatsRequest) returns (GetRuleStatsResponse);
+
+  // Enforce rules against an IntentEvent (v1.3)
+  rpc Enforce(EnforceRequest) returns (EnforceResponse);
+
+  // Query telemetry sessions from hitlogs
+  rpc QueryTelemetry(QueryTelemetryRequest) returns (QueryTelemetryResponse);
+
+  // Get full details for a specific session
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+}
+
+// Request to install rules
+message InstallRulesRequest {
+  string agent_id = 1;
+  repeated RuleInstance rules = 2;
+  string config_id = 3;
+  string owner = 4;
+}
+
+// Response after installing rules
+message InstallRulesResponse {
+  bool success = 1;
+  string message = 2;
+  int32 rules_installed = 3;
+  map<string, int32> rules_by_layer = 4;
+  int64 bridge_version = 5;
+}
+
+// Request to remove all rules for an agent
+message RemoveAgentRulesRequest {
+  string agent_id = 1;
+}
+
+// Response after removing rules
+message RemoveAgentRulesResponse {
+  bool success = 1;
+  string message = 2;
+  int32 rules_removed = 3;
+}
+
+// Request for rule statistics
+message GetRuleStatsRequest {
+  // Empty - gets all stats
+}
+
+// Response with rule statistics
+message GetRuleStatsResponse {
+  int64 bridge_version = 1;
+  int32 total_tables = 2;
+  int32 total_rules = 3;
+  int32 total_global_rules = 4;
+  int32 total_scoped_rules = 5;
+  repeated TableStats table_stats = 6;
+}
+
+// Statistics for a single table
+message TableStats {
+  string family_id = 1;
+  string layer_id = 2;
+  int64 version = 3;
+  int32 rule_count = 4;
+  int32 global_count = 5;
+  int32 scoped_count = 6;
+}
+
+// Rule instance that will be installed in the data plane
+message AnchorVector {
+  repeated float values = 1;
+}
+
+message RuleAnchorsPayload {
+  repeated AnchorVector action_anchors = 1;
+  int32 action_count = 2;
+  repeated AnchorVector resource_anchors = 3;
+  int32 resource_count = 4;
+  repeated AnchorVector data_anchors = 5;
+  int32 data_count = 6;
+  repeated AnchorVector risk_anchors = 7;
+  int32 risk_count = 8;
+}
+
+message RuleInstance {
+  string rule_id = 1;
+  string family_id = 2;
+  string layer = 3;
+  string agent_id = 4;
+  int32 priority = 5;
+  bool enabled = 6;
+  int64 created_at_ms = 7;
+  map<string, ParamValue> params = 8;
+  RuleAnchorsPayload anchors = 9;
+}
+
+// Parameter value (supports multiple types)
+message ParamValue {
+  oneof value {
+    string string_value = 1;
+    int64 int_value = 2;
+    double float_value = 3;
+    bool bool_value = 4;
+    StringList string_list = 5;
+  }
+}
+
+// Helper for string lists
+message StringList {
+  repeated string values = 1;
+}
+
+// Request to enforce rules against an intent (v1.3)
+message EnforceRequest {
+  // The IntentEvent to evaluate (JSON-serialized v1.3 schema)
+  string intent_event_json = 1;
+  // Optional pre-encoded 128-dim vector (minimizes re-encoding latency)
+  repeated float intent_vector = 2;
+}
+
+// Response from enforcement
+message EnforceResponse {
+  // 0 = BLOCK, 1 = ALLOW
+  int32 decision = 1;
+
+  // Per-slot similarity scores [action, resource, data, risk]
+  repeated float slice_similarities = 2;
+
+  // Number of rules evaluated before decision
+  int32 rules_evaluated = 3;
+
+  // Evidence from each rule evaluation
+  repeated RuleEvidence evidence = 4;
+}
+
+// Evidence from a single rule evaluation
+message RuleEvidence {
+  string rule_id = 1;
+  string rule_name = 2;
+  int32 decision = 3;  // 0 = blocked, 1 = passed
+  repeated float similarities = 4;  // Per-slot scores
+}
+
+// Request to query telemetry sessions
+message QueryTelemetryRequest {
+  optional string agent_id = 1;
+  optional string tenant_id = 2;
+  optional int32 decision = 3;  // 0=BLOCK, 1=ALLOW, -1=all
+  optional string layer = 4;    // L0-L6
+  optional int64 start_time_ms = 5;
+  optional int64 end_time_ms = 6;
+  int32 limit = 7;              // default 50, max 500
+  int32 offset = 8;             // for pagination
+}
+
+// Response with telemetry session summaries
+message QueryTelemetryResponse {
+  repeated EnforcementSessionSummary sessions = 1;
+  int32 total_count = 2;
+}
+
+// Summary of an enforcement session
+message EnforcementSessionSummary {
+  string session_id = 1;
+  string agent_id = 2;
+  string tenant_id = 3;
+  string layer = 4;
+  int64 timestamp_ms = 5;
+  int32 final_decision = 6;
+  int32 rules_evaluated_count = 7;
+  int64 duration_us = 8;
+  string intent_summary = 9;  // tool_name or action
+}
+
+// Request to get a specific session
+message GetSessionRequest {
+  string session_id = 1;
+}
+
+// Response with full session details
+message GetSessionResponse {
+  string session_json = 1;  // Full EnforcementSession as JSON
+}
