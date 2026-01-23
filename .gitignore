@@ -176,3 +176,6 @@ workspace/
 .codex
 .gemini-clipboard
 .uv_cache
+
+AGENTS.md
+.opencode
