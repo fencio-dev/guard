@@ -10,6 +10,7 @@ This reference document specifies the exact JSON schema for seed dataset example
 4. [Valid Examples](#valid-examples)
 5. [Invalid Examples](#invalid-examples)
 6. [Quality Metrics](#quality-metrics)
+7. [In-place Labeling Script](#in-place-labeling-script)
 
 ---
 
@@ -535,6 +536,25 @@ Output shows:
 - Count per sensitivity label
 - Percentage balance
 - Warnings for underrepresented categories
+
+---
+
+## In-place Labeling Script
+
+Use `scripts/label_inplace.py` to infer labels directly in the same JSONL file.
+The script applies keyword heuristics based on `raw_text` and `context`, then
+overwrites the input file (optionally with a backup).
+
+```bash
+python scripts/label_inplace.py data/seed/raw_examples.jsonl
+```
+
+**Common options**:
+- `--dry-run`: analyze without writing changes
+- `--backup`: write a `.bak` copy before overwriting
+- `--overwrite`: replace existing labels instead of only filling nulls
+- `--limit 100`: label only the first 100 examples
+- `--confidence-threshold 0.6`: flag low-confidence labels
 
 ---
 

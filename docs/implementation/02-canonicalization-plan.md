@@ -39,7 +39,7 @@ Insert a **canonicalization layer** before encoding:
 IntentEvent (variable) → BERT Classifier → Canonical Terms → IntentEncoder (SemanticEncoder)
                                                                   ↓
                                                           128d intent vector
-                                                          
+                                                        
 Policy (variable) → BERT Classifier → Canonical Terms → PolicyEncoder (SemanticEncoder)
                                                               ↓
                                                       4×16×32 anchor vectors
@@ -108,17 +108,17 @@ canonicalization:
       source: "event.action"
       context_fields: ["event.tool_name", "event.tool_method"]
       required: true
-    
+  
     - name: resource_type
       source: "event.resource.type"
       context_fields: ["event.tool_name", "event.resource.location"]
       required: true
-    
+  
     - name: sensitivity
       source: "event.data.sensitivity"
       context_fields: []
       required: true
-    
+  
     # Optional: canonicalize tool names too
     - name: tool_category
       source: "event.tool_name"
@@ -159,68 +159,68 @@ Replace SDK coupling with a single **HTTP endpoint** that any agent can call at 
 │                                                                        │
 │  ┌─────────────────────────────────────────────────────────┐           │
 │  │ Any Agent Framework                                     │           │
-│  │ (LangGraph, LangChain, OpenAI SDK, n8n, custom, etc)   │           │
+│  │ (LangGraph, LangChain, OpenAI SDK, n8n, custom, etc)    │           │
 │  └──────────────────────────┬──────────────────────────────┘           │
 │                             │                                          │
-│                 HTTP POST /v2/guard/enforce                           │
+│                 HTTP POST /v2/guard/enforce                            │
 │                             │                                          │
-│        ┌────────────────────▼───────────────────────┐                 │
-│        │       HOOK REQUEST (Flexible Format)       │                 │
-│        ├────────────────────────────────────────────┤                 │
-│        │ {                                          │                 │
-│        │   "hook": "pre_tool_call",                 │                 │
-│        │   "intent": {                              │                 │
-│        │     "tool_name": "database_query",         │                 │
-│        │     "action": "query",    ← non-canonical  │                 │
-│        │     "resource": "users",                   │                 │
-│        │     "description": "fetch active accounts" │                 │
-│        │   },                                       │                 │
-│        │   "context": { ... }                       │                 │
-│        │ }                                          │                 │
-│        └────────────────────┬───────────────────────┘                 │
+│        ┌────────────────────▼───────────────────────┐                  │
+│        │       HOOK REQUEST (Flexible Format)       │                  │
+│        ├────────────────────────────────────────────┤                  │
+│        │ {                                          │                  │
+│        │   "hook": "pre_tool_call",                 │                  │
+│        │   "intent": {                              │                  │
+│        │     "tool_name": "database_query",         │                  │
+│        │     "action": "query",    ← non-canonical  │                  │
+│        │     "resource": "users",                   │                  │
+│        │     "description": "fetch active accounts" │                  │
+│        │   },                                       │                  │
+│        │   "context": { ... }                       │                  │
+│        │ }                                          │                  │
+│        └────────────────────┬───────────────────────┘                  │
 │                             │                                          │
-│        ┌────────────────────▼───────────────────────┐                 │
-│        │    HOOK PROCESSOR (Framework Agnostic)     │                 │
-│        ├────────────────────────────────────────────┤                 │
-│        │                                            │                 │
-│        │  1. Hook Validator (hooks.yaml)            │                 │
-│        │     ├─ Validate hook type                  │                 │
-│        │     └─ Check required fields               │                 │
-│        │                                            │                 │
-│        │  2. Field Extractor (extraction.yaml)      │                 │
-│        │     ├─ Detect input format                 │                 │
-│        │     └─ Apply field mappings                │                 │
-│        │                                            │                 │
-│        │  3. BERT Canonicalizer                     │                 │
-│        │     ├─ "query" → "read"                    │                 │
-│        │     ├─ Infer resource_type from context   │                 │
-│        │     └─ Apply confidence thresholds         │                 │
-│        │                                            │                 │
-│        │  4. Intent Builder                         │                 │
-│        │     └─ Assemble canonical IntentEvent      │                 │
-│        │                                            │                 │
-│        └────────────────────┬───────────────────────┘                 │
+│        ┌────────────────────▼───────────────────────┐                  │
+│        │    HOOK PROCESSOR (Framework Agnostic)     │                  │
+│        ├────────────────────────────────────────────┤                  │
+│        │                                            │                  │
+│        │  1. Hook Validator (hooks.yaml)            │                  │
+│        │     ├─ Validate hook type                  │                  │
+│        │     └─ Check required fields               │                  │
+│        │                                            │                  │
+│        │  2. Field Extractor (extraction.yaml)      │                  │
+│        │     ├─ Detect input format                 │                  │
+│        │     └─ Apply field mappings                │                  │
+│        │                                            │                  │
+│        │  3. BERT Canonicalizer                     │                  │
+│        │     ├─ "query" → "read"                    │                  │
+│        │     ├─ Infer resource_type from context    │                  │
+│        │     └─ Apply confidence thresholds         │                  │
+│        │                                            │                  │
+│        │  4. Intent Builder                         │                  │
+│        │     └─ Assemble canonical IntentEvent      │                  │
+│        │                                            │                  │
+│        └────────────────────┬───────────────────────┘                  │
 │                             │                                          │
-│        ┌────────────────────▼───────────────────────┐                 │
-│        │   EXISTING ENFORCEMENT PIPELINE             │                 │
-│        │   (encode_to_128d → data_plane.enforce)    │                 │
-│        └────────────────────┬───────────────────────┘                 │
+│        ┌────────────────────▼───────────────────────┐                  │
+│        │   EXISTING ENFORCEMENT PIPELINE            │                  │
+│        │   (encode_to_128d → data_plane.enforce)    │                  │
+│        └────────────────────┬───────────────────────┘                  │
 │                             │                                          │
-│        ┌────────────────────▼───────────────────────┐                 │
-│        │      RESPONSE (HookEnforcementResult)      │                 │
-│        ├────────────────────────────────────────────┤                 │
-│        │ {                                          │                 │
-│        │   "decision": 1,                           │                 │
-│        │   "hook": "pre_tool_call",                 │                 │
-│        │   "canonical_intent": {                    │                 │
-│        │     "action": "read",    ← canonicalized   │                 │
-│        │     "resource_type": "database",           │                 │
-│        │     ...                                    │                 │
-│        │   },                                       │                 │
-│        │   "evidence": [ ... ],                     │                 │
-│        │   "trace": { ... }       ← debug info      │                 │
-│        │ }                                          │                 │
-│        └────────────────────────────────────────────┘                 │
+│        ┌────────────────────▼───────────────────────┐                  │
+│        │      RESPONSE (HookEnforcementResult)      │                  │
+│        ├────────────────────────────────────────────┤                  │
+│        │ {                                          │                  │
+│        │   "decision": 1,                           │                  │
+│        │   "hook": "pre_tool_call",                 │                  │
+│        │   "canonical_intent": {                    │                  │
+│        │     "action": "read",    ← canonicalized   │                  │
+│        │     "resource_type": "database",           │                  │
+│        │     ...                                    │                  │
+│        │   },                                       │                  │
+│        │   "evidence": [ ... ],                     │                  │
+│        │   "trace": { ... }       ← debug info      │                  │
+│        │ }                                          │                  │
+│        └────────────────────────────────────────────┘                  │
 │                                                                        │
 └────────────────────────────────────────────────────────────────────────┘
 ```
@@ -681,12 +681,12 @@ canonicalization:
       source: "event.action"
       context_fields: ["event.tool_name", "event.tool_method"]
       required: true
-    
+  
     - name: resource_type
       source: "event.resource.type"
       context_fields: ["event.tool_name", "event.resource.location"]
       required: true
-    
+  
     - name: sensitivity
       source: "event.data.sensitivity"
       context_fields: []
@@ -1259,26 +1259,26 @@ class Canonicalizer:
     def __init__(self, config: CanonicalizationConfig):
         self.bert_model = load_tinybert(config.model_name)
         self.config = config
-      
+    
     def canonicalize_intent(self, intent: IntentEvent) -> CanonicalizedIntent:
         """Canonicalize all configured fields in intent.
-      
+    
         After canonicalization, the intent is passed to IntentEncoder
         (a subclass of SemanticEncoder) for semantic encoding.
         """
         canonicalized = intent.copy()
         logs = []
-      
+    
         for field_config in self.config.fields:
             raw_value = self._extract_field(intent, field_config.source)
             context = self._build_context(intent, field_config)
-          
+        
             prediction = self.bert_model.predict(
                 text=raw_value,
                 context=context,
                 field=field_config.name
             )
-          
+        
             # Log for learning loop
             logs.append(CanonicalLog(
                 field=field_config.name,
@@ -1286,7 +1286,7 @@ class Canonicalizer:
                 prediction=prediction,
                 timestamp=now()
             ))
-          
+        
             # Apply confidence threshold
             if prediction.confidence >= self.config.thresholds.high_confidence:
                 self._set_field(canonicalized, field_config.source, prediction.label)
@@ -1296,10 +1296,10 @@ class Canonicalizer:
             else:
                 # Passthrough - use raw value
                 pass
-      
+    
         # Persist logs asynchronously
         asyncio.create_task(self._log_predictions(logs, intent))
-      
+    
         return canonicalized
 ```
 

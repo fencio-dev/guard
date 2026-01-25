@@ -4,7 +4,7 @@
 //! 1. Receives IntentEvent from SDK via gRPC
 //! 2. Calls Management Plane to encode intent to 128d vector
 //! 3. Queries rules from Bridge for the specified layer
-//! 4. Calls semantic-sandbox FFI to compare intent against each rule's anchors
+//! 4. Compares intent vector directly against rule anchors using in-process comparison
 //! 5. Implements short-circuit evaluation (first BLOCK stops evaluation)
 //! 6. Returns enforcement decision with evidence
 //! 7. Records complete telemetry to /var/hitlogs for audit trail
@@ -18,17 +18,13 @@ use serde::Deserialize;
 
 use crate::bridge::Bridge;
 use crate::rule_vector::RuleVector;
-use crate::types::{RuleFamilyId, RuleInstance};
-use crate::telemetry::{
-    EnforcementSession, RuleEvaluationEvent, SessionEvent,
-    TelemetryRecorder,
-};
 use crate::telemetry::session::SliceComparisonDetail;
-use semantic_sandbox::{compare_vectors, ComparisonResult as SandboxResult, VectorEnvelope};
+use crate::telemetry::{EnforcementSession, RuleEvaluationEvent, SessionEvent, TelemetryRecorder};
+use crate::types::{RuleFamilyId, RuleInstance};
+use crate::vector_comparison::{compare_intent_vs_rule, ComparisonResult, DecisionMode};
 
 const CONNECT_TIMEOUT_MS: u64 = 500;
 const REQUEST_TIMEOUT_MS: u64 = 1_500;
-const DEFAULT_WEIGHTS: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
 // Per-slot thresholds for ToolWhitelist family
 // [Action, Resource, Data, Risk]
@@ -153,9 +149,10 @@ impl EnforcementEngine {
         println!("Enforcing intent for layer: {}", layer);
 
         // Start telemetry session
-        let session_id = self.telemetry.as_ref().and_then(|t| {
-            t.start_session(layer.to_string(), intent_json.to_string())
-        });
+        let session_id = self
+            .telemetry
+            .as_ref()
+            .and_then(|t| t.start_session(layer.to_string(), intent_json.to_string()));
 
         // Populate agent_id and tenant_id from IntentEvent
         if let (Some(ref telemetry), Some(ref sid)) = (&self.telemetry, &session_id) {
@@ -192,7 +189,8 @@ impl EnforcementEngine {
             });
         }
 
-        let (intent_vector, encoding_duration, vector_norm) = if let Some(vector) = vector_override {
+        let (intent_vector, encoding_duration, vector_norm) = if let Some(vector) = vector_override
+        {
             let norm = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
             (vector, 0u64, norm)
         } else {
@@ -324,6 +322,10 @@ impl EnforcementEngine {
             // Compare using semantic sandbox FFI
             let result = self.compare_with_sandbox(&intent_vector, &rule_vector, &rule)?;
             let rule_eval_duration = rule_eval_start.elapsed().as_micros() as u64;
+
+            // Mark rule as recently evaluated (updates LRU timestamp in hot cache)
+            // This prevents it from being evicted, as it's actively being used
+            let _ = self.bridge.hot_cache.get_and_mark(rule.rule_id());
 
             // Record evidence
             evidence.push(RuleEvidence {
@@ -538,37 +540,25 @@ impl EnforcementEngine {
         Ok(all_rules)
     }
 
-    /// Get cached rule vector or encode from Management Plane
-    /// Compare intent vector against rule anchors using semantic sandbox
+    /// Compare intent vector against rule anchors using direct in-process comparison
     fn compare_with_sandbox(
         &self,
         intent_vector: &[f32; 128],
         rule_vector: &RuleVector,
         rule: &Arc<dyn RuleInstance>,
-    ) -> Result<SandboxResult, String> {
+    ) -> Result<ComparisonResult, String> {
         let thresholds = match rule.family_id() {
             RuleFamilyId::ToolWhitelist => TOOL_WHITELIST_THRESHOLDS,
             RuleFamilyId::ToolParamConstraint => DEFAULT_THRESHOLDS,
             _ => DEFAULT_THRESHOLDS,
         };
 
-        let envelope = VectorEnvelope {
-            intent: *intent_vector,
-            action_anchors: rule_vector.action_anchors,
-            action_anchor_count: rule_vector.action_count,
-            resource_anchors: rule_vector.resource_anchors,
-            resource_anchor_count: rule_vector.resource_count,
-            data_anchors: rule_vector.data_anchors,
-            data_anchor_count: rule_vector.data_count,
-            risk_anchors: rule_vector.risk_anchors,
-            risk_anchor_count: rule_vector.risk_count,
+        Ok(compare_intent_vs_rule(
+            intent_vector,
+            rule_vector,
             thresholds,
-            weights: DEFAULT_WEIGHTS,
-            decision_mode: 0, // min-mode short-circuit for ToolGateway
-            global_threshold: 0.0,
-        };
-
-        Ok(compare_vectors(&envelope))
+            DecisionMode::MinMode,
+        ))
     }
 
     /// Calculate average similarities across all evidence
@@ -604,7 +594,7 @@ impl EnforcementEngine {
     /// Build detailed slice comparison data for telemetry
     fn build_slice_details(
         &self,
-        result: &SandboxResult,
+        result: &ComparisonResult,
         thresholds: &[f32; 4],
     ) -> Vec<SliceComparisonDetail> {
         let slice_names = ["action", "resource", "data", "risk"];

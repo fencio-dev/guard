@@ -35,6 +35,59 @@ The skill leverages five complementary sources to build an unbiased, comprehensi
 
 ## Workflow: Step-by-Step Process
 
+## Agent Workflow Options
+
+When using this skill, you have two approaches for generating labeled examples:
+
+### Option A: Script-Assisted Generation (Recommended for Agents)
+
+Use `fetch_openapi.py` to extract raw examples, then apply labels in a second pass.
+
+**Steps:**
+1. Run: `python scripts/fetch_openapi.py <spec_url> --output examples_<datetime>.jsonl`
+2. The script outputs examples with `labels: {action: null, resource_type: null, sensitivity: null}`
+3. Run: `python scripts/label_inplace.py examples_<datetime>.jsonl.jsonl`
+4. Review low-confidence labels and adjust using VOCABULARY.md
+5. Update any remaining labels and keep the file as your final output
+
+**Note:** This approach requires two passes, but standardizes spec fetching and parsing.
+
+### Option B: Direct Generation
+
+Generate JSONL examples directly without using the helper scripts. Use this when you cannot run the scripts or need tighter control over extraction.
+
+**Steps:**
+1. Fetch the OpenAPI spec using web fetch tools
+2. Parse the JSON/YAML to extract operations
+3. For each operation:
+   - Generate `raw_text` from the summary/description
+   - Apply labeling rules from VOCABULARY.md to determine action, resource_type, sensitivity
+   - Create the complete JSONL entry with all fields populated
+4. Output valid JSONL
+
+**Example - Complete workflow for one operation:**
+
+```json
+// Input: GitHub API operation
+{
+  "path": "/repos/{owner}/{repo}/issues",
+  "method": "POST",
+  "summary": "Create an issue",
+  "description": "Creates a new issue in the specified repository"
+}
+
+// Step 1: Generate raw_text
+"create an issue in the specified repository"
+
+// Step 2: Apply labeling rules (from VOCABULARY.md)
+// - "create" keyword → action: "write"
+// - External API endpoint → resource_type: "api"
+// - "issue" is project data, not PII → sensitivity: "internal"
+
+// Step 3: Output complete JSONL entry
+{"id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "raw_text": "create an issue in the specified repository", "context": {"tool_name": "github-api", "tool_method": "POST /repos/{owner}/{repo}/issues", "resource_location": null}, "labels": {"action": "write", "resource_type": "api", "sensitivity": "internal"}, "source": "openapi-spec", "source_detail": "github-rest-api-v2024", "reviewed": false}
+```
+
 ### Step 1: Choose Your Data Source
 
 Decide which source to target:
@@ -325,6 +378,63 @@ Process:
 5. Final validation: python scripts/validate_examples.py data/seed/combined_50k.jsonl
 ```
 
+## Complete Worked Example: GitHub API
+
+This example shows the full workflow from fetching a spec to outputting labeled examples.
+
+### Step 1: Fetch the OpenAPI Spec
+
+Fetch from: `https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json`
+
+### Step 2: Extract 5 Operations
+
+From the spec, extract operations like:
+
+| Method | Path | Summary |
+|--------|------|---------|
+| GET | /repos/{owner}/{repo}/issues | List repository issues |
+| POST | /repos/{owner}/{repo}/issues | Create an issue |
+| PATCH | /repos/{owner}/{repo}/issues/{issue_number} | Update an issue |
+| DELETE | /repos/{owner}/{repo}/issues/{issue_number}/lock | Unlock an issue |
+| GET | /user | Get the authenticated user |
+
+### Step 3: Apply Labeling Rules
+
+For each operation, apply the decision trees from VOCABULARY.md:
+
+**Example 1: GET /repos/{owner}/{repo}/issues**
+- Raw text: "list repository issues"
+- Action: "list" → **read** (retrieval operation)
+- Resource: GitHub API endpoint → **api**
+- Sensitivity: "issues" are project data → **internal**
+
+**Example 2: POST /repos/{owner}/{repo}/issues**
+- Raw text: "create an issue"
+- Action: "create" → **write** (creating new data)
+- Resource: GitHub API endpoint → **api**
+- Sensitivity: "issue" is project data → **internal**
+
+**Example 3: GET /user**
+- Raw text: "get the authenticated user"
+- Action: "get" → **read**
+- Resource: GitHub API endpoint → **api**
+- Sensitivity: "authenticated user" contains user info → **secret**
+
+### Step 4: Generate JSONL Output
+
+```jsonl
+{"id": "gh-001", "raw_text": "list repository issues", "context": {"tool_name": "github-api", "tool_method": "GET /repos/{owner}/{repo}/issues", "resource_location": null}, "labels": {"action": "read", "resource_type": "api", "sensitivity": "internal"}, "source": "openapi-spec", "source_detail": "github-rest-api-2024", "reviewed": false}
+{"id": "gh-002", "raw_text": "create an issue", "context": {"tool_name": "github-api", "tool_method": "POST /repos/{owner}/{repo}/issues", "resource_location": null}, "labels": {"action": "write", "resource_type": "api", "sensitivity": "internal"}, "source": "openapi-spec", "source_detail": "github-rest-api-2024", "reviewed": false}
+{"id": "gh-003", "raw_text": "get the authenticated user", "context": {"tool_name": "github-api", "tool_method": "GET /user", "resource_location": null}, "labels": {"action": "read", "resource_type": "api", "sensitivity": "secret"}, "source": "openapi-spec", "source_detail": "github-rest-api-2024", "reviewed": false}
+```
+
+### Step 5: Validate
+
+Run validation to check your output:
+```bash
+python scripts/validate_examples.py data/seed/github_examples.jsonl
+```
+
 ## Quality Checklist
 
 Before outputting your seed dataset, ensure:
@@ -375,6 +485,13 @@ Fetches and parses OpenAPI spec. Extracts:
 - Operation descriptions
 - Parameter information
 Outputs raw text examples ready for labeling.
+
+### label_inplace.py
+```bash
+python scripts/label_inplace.py <jsonl_file> [--dry-run] [--backup] [--overwrite]
+```
+Applies heuristic labeling rules in-place using `raw_text` and `context` fields.
+Prints low-confidence warnings so you can review and adjust before validation.
 
 See individual scripts for detailed usage.
 

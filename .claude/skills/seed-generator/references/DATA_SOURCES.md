@@ -25,13 +25,16 @@ Popular APIs with publicly available OpenAPI specs:
 
 | API | Spec URL | Operations | Notes |
 |-----|----------|-----------|-------|
-| **Stripe** | https://github.com/stripe/openapi | ~300 endpoints | Payment operations, comprehensive |
-| **GitHub** | https://docs.github.com/en/rest/using-the-rest-api/getting-started-with-the-rest-api | ~150 endpoints | Repository, issue, PR operations |
-| **AWS** | https://docs.aws.amazon.com/general/latest/gr/aws-service-information.html | ~10K endpoints | Infrastructure APIs, diverse operations |
-| **Google Cloud** | https://cloud.google.com/apis/docs | ~1K endpoints | Cloud services |
-| **Twilio** | https://www.twilio.com/docs/usage/api | ~50 endpoints | Communications APIs |
-| **Slack** | https://api.slack.com/ | ~100 endpoints | Chat/collaboration |
-| **PagerDuty** | https://developer.pagerduty.com/api-reference | ~80 endpoints | Incident management |
+| **Stripe** | `https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json` | ~300 endpoints | Payment operations, comprehensive |
+| **GitHub** | `https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json` | ~900 endpoints | Repository, issue, PR operations |
+| **Twilio** | `https://raw.githubusercontent.com/twilio/twilio-oai/main/spec/json/twilio_api_v2010.json` | ~200 endpoints | Communications APIs |
+| **PetStore (Demo)** | `https://petstore3.swagger.io/api/v3/openapi.json` | ~20 endpoints | Good for testing workflow |
+
+**Note on AWS and Google Cloud:**
+- AWS and Google Cloud provide per-service OpenAPI specs, not a single consolidated spec
+- For AWS, find service-specific specs at: `https://github.com/aws/aws-sdk-js-v3/tree/main/codegen/sdk-codegen/aws-models`
+- For Google Cloud, APIs are documented at: `https://github.com/googleapis/googleapis`
+- Consider using 2-3 specific service specs (e.g., AWS S3, AWS Lambda) rather than attempting full coverage
 
 ### Extracting Examples from OpenAPI
 

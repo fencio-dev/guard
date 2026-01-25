@@ -82,6 +82,22 @@ class Config:
     CHROMA_URL: str = os.getenv("CHROMA_URL", "http://localhost:8002")
     CHROMA_COLLECTION_PREFIX: str = os.getenv("CHROMA_COLLECTION_PREFIX", "rules_")
 
+    # Canonicalization Configuration (v2)
+    CANONICALIZATION_ENABLED: bool = os.getenv("CANONICALIZATION_ENABLED", "true").lower() == "true"
+    CANONICALIZATION_CONFIG_PATH: str | None = os.getenv("CANONICALIZATION_CONFIG_PATH")
+    CANONICALIZATION_LOG_DIR: str = os.getenv("CANONICALIZATION_LOG_DIR", "/var/log/guard/canonicalization")
+    CANONICALIZATION_LOG_RETENTION_DAYS: int = int(os.getenv("CANONICALIZATION_LOG_RETENTION_DAYS", "90"))
+    BERT_MODEL_PATH: str = os.getenv(
+        "BERT_MODEL_PATH",
+        "management_plane/models/canonicalizer_tinybert_v1.0/model.onnx",
+    )
+    BERT_TOKENIZER_PATH: str = os.getenv(
+        "BERT_TOKENIZER_PATH",
+        "management_plane/models/canonicalizer_tinybert_v1.0/tokenizer",
+    )
+    BERT_CONFIDENCE_HIGH: float = float(os.getenv("BERT_CONFIDENCE_HIGH", "0.9"))
+    BERT_CONFIDENCE_MEDIUM: float = float(os.getenv("BERT_CONFIDENCE_MEDIUM", "0.7"))
+
     @classmethod
     def validate(cls) -> None:
         """

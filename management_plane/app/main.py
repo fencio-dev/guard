@@ -6,6 +6,7 @@ Provides REST API for intent comparison, boundary management, and telemetry.
 """
 
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -14,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .config import config
-from .endpoints import agents, auth, boundaries, encoding, enforcement, health, intents, telemetry
+from .endpoints import agents, auth, boundaries, encoding, enforcement, enforcement_v2, health, intents, telemetry
 
 # Configure logging
 logging.basicConfig(
@@ -43,6 +44,52 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Validate configuration
         config.validate()
         logger.info("Configuration validated successfully")
+
+        # Initialize canonicalization services if enabled
+        if config.CANONICALIZATION_ENABLED:
+            try:
+                from .endpoints.enforcement_v2 import (
+                    get_canonicalizer,
+                    get_intent_encoder,
+                    get_policy_encoder,
+                    get_canonicalization_logger,
+                )
+
+                logger.info("Initializing canonicalization services...")
+
+                # Load canonicalizer
+                start_time = time.time()
+                canonicalizer = get_canonicalizer()
+                if canonicalizer:
+                    canon_time = (time.time() - start_time) * 1000
+                    logger.info(f"BERT canonicalizer loaded in {canon_time:.1f}ms")
+                else:
+                    logger.warning("BERT canonicalizer not available")
+
+                # Load intent encoder
+                intent_encoder = get_intent_encoder()
+                if intent_encoder:
+                    logger.info("Intent encoder initialized")
+                else:
+                    logger.warning("Intent encoder not available")
+
+                # Load policy encoder
+                policy_encoder = get_policy_encoder()
+                if policy_encoder:
+                    logger.info("Policy encoder initialized")
+                else:
+                    logger.warning("Policy encoder not available")
+
+                # Initialize logger
+                canon_logger = get_canonicalization_logger()
+                if canon_logger:
+                    await canon_logger.start()
+                    logger.info(f"Canonicalization logger started: {canon_logger.log_dir}")
+                else:
+                    logger.warning("Canonicalization logger not available")
+
+            except Exception as e:
+                logger.warning(f"Canonicalization services initialization warning: {e}")
 
         # Initialize FFI bridge (will load Rust library)
         from .ffi_bridge import get_sandbox
@@ -79,6 +126,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Shutdown
     logger.info("Shutting down Management Plane")
 
+    # Cleanup canonicalization logger
+    if config.CANONICALIZATION_ENABLED:
+        try:
+            from .endpoints.enforcement_v2 import get_canonicalization_logger
+
+            canon_logger = get_canonicalization_logger()
+            if canon_logger:
+                await canon_logger.stop()
+                logger.info("Canonicalization logger stopped")
+        except Exception as e:
+            logger.warning(f"Error stopping canonicalization logger: {e}")
+
 
 # Create FastAPI application
 app = FastAPI(
@@ -103,9 +162,10 @@ app.include_router(auth.router, prefix=config.API_V1_PREFIX)  # Token validation
 app.include_router(intents.router, prefix=config.API_V1_PREFIX)
 app.include_router(boundaries.router, prefix=config.API_V1_PREFIX)
 app.include_router(telemetry.router, prefix=config.API_V1_PREFIX)
-app.include_router(encoding.router, prefix=config.API_V1_PREFIX)  # NEW v1.3: Encoding endpoints
-app.include_router(agents.router, prefix=config.API_V1_PREFIX)  # NEW v1.0: Agent policies
+app.include_router(encoding.router, prefix=config.API_V1_PREFIX)  # v1.3: Encoding endpoints
+app.include_router(agents.router, prefix=config.API_V1_PREFIX)  # v1.0: Agent policies
 app.include_router(enforcement.router, prefix=config.API_V1_PREFIX)
+app.include_router(enforcement_v2.router, prefix=config.API_V1_PREFIX)  # NEW v2: Canonicalization + Enforcement
 
 
 # Global exception handler

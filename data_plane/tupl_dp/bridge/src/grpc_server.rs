@@ -8,7 +8,7 @@
 
 use crate::bridge::Bridge;
 use crate::enforcement_engine::EnforcementEngine;
-use crate::refresh::RefreshService;
+use crate::refresh::{RefreshScheduler, RefreshService, SchedulerConfig};
 use crate::rule_converter::{ControlPlaneRule, ParamValue, RuleConverter};
 use crate::rule_vector::{convert_anchor_block, RuleVector};
 use crate::types::{RuleFamilyId, RuleInstance};
@@ -32,14 +32,18 @@ struct RuleAnchorsResponse {
     risk_count: usize,
 }
 
-fn convert_proto_rule_anchors(
-    payload: RuleAnchorsPayload,
-) -> Result<RuleVector, String> {
+fn convert_proto_rule_anchors(payload: RuleAnchorsPayload) -> Result<RuleVector, String> {
     fn convert_block(
         slot: &str,
         vectors: Vec<Vec<f32>>,
         count: i32,
-    ) -> Result<([[f32; crate::rule_vector::SLOT_WIDTH]; crate::rule_vector::MAX_ANCHORS_PER_SLOT], usize), String> {
+    ) -> Result<
+        (
+            [[f32; crate::rule_vector::SLOT_WIDTH]; crate::rule_vector::MAX_ANCHORS_PER_SLOT],
+            usize,
+        ),
+        String,
+    > {
         if count < 0 {
             return Err(format!("Slot '{}' has negative count {}", slot, count));
         }
@@ -63,7 +67,8 @@ fn convert_proto_rule_anchors(
     let risk_vecs: Vec<Vec<f32>> = risk_anchors.into_iter().map(|v| v.values).collect();
 
     let (action_block, action_count) = convert_block("action", action_vecs, action_count)?;
-    let (resource_block, resource_count) = convert_block("resource", resource_vecs, resource_count)?;
+    let (resource_block, resource_count) =
+        convert_block("resource", resource_vecs, resource_count)?;
     let (data_block, data_count) = convert_block("data", data_vecs, data_count)?;
     let (risk_block, risk_count) = convert_block("risk", risk_vecs, risk_count)?;
 
@@ -127,12 +132,11 @@ impl DataPlaneService {
         let sanitized_url = management_plane_url.trim_end_matches('/').to_string();
 
         // Enable telemetry for enforcement tracking
-        use crate::telemetry::{TelemetryRecorder, TelemetryConfig};
-        let hitlog_dir = std::env::var("HITLOG_DIR")
-            .unwrap_or_else(|_| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                format!("{}/var/hitlogs", home)
-            });
+        use crate::telemetry::{TelemetryConfig, TelemetryRecorder};
+        let hitlog_dir = std::env::var("HITLOG_DIR").unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            format!("{}/var/hitlogs", home)
+        });
 
         let telemetry_config = TelemetryConfig {
             hitlog_dir: hitlog_dir.clone(),
@@ -720,6 +724,19 @@ pub async fn start_grpc_server(
 
     println!("Starting Data Plane gRPC server on {}", addr);
     println!("Management Plane URL: {}", management_plane_url);
+
+    let scheduler = Arc::new(RefreshScheduler::new(
+        Arc::clone(&bridge),
+        SchedulerConfig::default(),
+    ));
+
+    {
+        let scheduler_runner = Arc::clone(&scheduler);
+        tokio::spawn(async move {
+            println!("Spawning scheduled refresh background task");
+            scheduler_runner.start().await;
+        });
+    }
 
     let service = DataPlaneService::new(bridge, management_plane_url);
 

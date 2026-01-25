@@ -213,12 +213,12 @@ To build an unbiased dataset:
 ### Generate from GitHub API
 
 ```bash
-# 1. Extract from OpenAPI
-python scripts/fetch_openapi.py https://docs.github.com/rest/reference/repos \
-  --api-name github-api --output github_raw.jsonl
+# 1. Extract from OpenAPI (note: outputs unlabeled examples)
+python scripts/fetch_openapi.py https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json \
+  --api-name github-api --output github_raw.jsonl --limit 100
 
-# 2. Label using VOCABULARY.md rules
-# (Agent applies labeling based on decision trees)
+# 2. Apply labels using VOCABULARY.md rules (agent does this step)
+# The script outputs examples with null labels - you must apply labeling rules
 
 # 3. Validate
 python scripts/validate_examples.py github_raw.jsonl
