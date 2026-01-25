@@ -8,6 +8,7 @@
 
 use crate::bridge::Bridge;
 use crate::enforcement_engine::EnforcementEngine;
+use crate::refresh::RefreshService;
 use crate::rule_converter::{ControlPlaneRule, ParamValue, RuleConverter};
 use crate::rule_vector::{convert_anchor_block, RuleVector};
 use crate::types::{RuleFamilyId, RuleInstance};
@@ -87,8 +88,9 @@ use rule_installation::{
     data_plane_server::{DataPlane, DataPlaneServer},
     EnforceRequest, EnforceResponse, EnforcementSessionSummary, GetRuleStatsRequest,
     GetRuleStatsResponse, GetSessionRequest, GetSessionResponse, InstallRulesRequest,
-    InstallRulesResponse, QueryTelemetryRequest, QueryTelemetryResponse, RemoveAgentRulesRequest,
-    RemoveAgentRulesResponse, RuleAnchorsPayload, RuleEvidence, TableStats,
+    InstallRulesResponse, QueryTelemetryRequest, QueryTelemetryResponse, RefreshRulesRequest,
+    RefreshRulesResponse, RemoveAgentRulesRequest, RemoveAgentRulesResponse, RuleAnchorsPayload,
+    RuleEvidence, TableStats,
 };
 
 // ================================================================================================
@@ -111,6 +113,9 @@ pub struct DataPlaneService {
 
     /// Hitlog query engine for telemetry
     hitlog_query: Arc<crate::telemetry::query::HitlogQuery>,
+
+    /// Service for rule refresh from warm storage
+    refresh_service: Arc<RefreshService>,
 }
 
 const CONNECT_TIMEOUT_MS: u64 = 2_000;
@@ -155,12 +160,16 @@ impl DataPlaneService {
         // Initialize hitlog query for telemetry (clone hitlog_dir as it was moved to telemetry)
         let hitlog_query = Arc::new(crate::telemetry::query::HitlogQuery::new(&hitlog_dir));
 
+        // Initialize refresh service for warm storage refresh
+        let refresh_service = Arc::new(RefreshService::new(Arc::clone(&bridge)));
+
         DataPlaneService {
             bridge,
             enforcement_engine,
             encoding_http_client,
             management_plane_url: sanitized_url,
             hitlog_query,
+            refresh_service,
         }
     }
 
@@ -631,6 +640,48 @@ impl DataPlane for DataPlaneService {
             .map_err(|e| Status::internal(format!("Serialization failed: {}", e)))?;
 
         Ok(Response::new(GetSessionResponse { session_json }))
+    }
+
+    /// Handle RefreshRules gRPC request.
+    ///
+    /// Triggers immediate refresh of rules from warm storage.
+    /// Useful when:
+    /// - Rules changed externally
+    /// - Need to sync hot cache with persistent storage
+    /// - Testing refresh mechanism
+    async fn refresh_rules(
+        &self,
+        _request: Request<RefreshRulesRequest>,
+    ) -> Result<Response<RefreshRulesResponse>, Status> {
+        println!("================================================");
+        println!("  RefreshRules RPC called");
+        println!("================================================");
+
+        // Call refresh service
+        match self.refresh_service.refresh_from_storage().await {
+            Ok(stats) => {
+                println!(
+                    "Refresh completed: {} rules in {}ms",
+                    stats.rules_refreshed, stats.duration_ms
+                );
+                println!("=================================================\n");
+
+                Ok(Response::new(RefreshRulesResponse {
+                    success: true,
+                    message: format!(
+                        "Refreshed {} rules in {}ms",
+                        stats.rules_refreshed, stats.duration_ms
+                    ),
+                    rules_refreshed: stats.rules_refreshed as i32,
+                    duration_ms: stats.duration_ms as i64,
+                }))
+            }
+            Err(e) => {
+                eprintln!("  ✗ Refresh failed: {}", e);
+                println!("=================================================\n");
+                Err(Status::internal(format!("Refresh failed: {}", e)))
+            }
+        }
     }
 }
 
