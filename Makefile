@@ -15,8 +15,10 @@ help:
 	@echo ""
 	@echo "Running:"
 	@echo "  make run-mgmt         Run management-plane server (dev mode, port 8000)"
+	@echo "  make run-mgmt PORT=9000  Run with custom port"
 	@echo "  make run-data         Run data-plane server (port 50051)"
 	@echo "  make run-all          Run both management-plane AND data-plane"
+	@echo "  make run-all PORT=9000   Run both with custom mgmt port"
 	@echo ""
 	@echo "Building:"
 	@echo "  make build-rust       Build Rust semantic-sandbox library"
@@ -65,9 +67,9 @@ clean:
 	@echo "✅ Cleaned!"
 
 run-mgmt:
-	@echo "Starting management-plane server on port 8000..."
+	@echo "Starting management-plane server on port $(or $(PORT),8000)..."
 	@mkdir -p data/logs
-	cd management_plane && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+	cd management_plane && MGMT_PLANE_PORT=$(or $(PORT),8000) uv run uvicorn app.main:app --reload --host 0.0.0.0 --port $(or $(PORT),8000)
 
 run-data:
 	@echo "Starting data-plane server on port 50051..."
@@ -75,16 +77,16 @@ run-data:
 	cd data_plane/tupl_dp/bridge && cargo run --bin bridge-server
 
 run-all:
-	@echo "Starting both management-plane (8000) and data-plane (50051)..."
+	@echo "Starting both management-plane ($(or $(PORT),8000)) and data-plane (50051)..."
 	@echo "Logs will be written to:"
 	@echo "  - Management Plane: data/logs/management-plane.log"
 	@echo "  - Data Plane:       data/logs/data-plane.log"
 	@echo ""
 	@mkdir -p data/logs
 	@trap 'kill 0' EXIT; \
-	(cd data_plane/tupl_dp/bridge && cargo run --bin bridge-server > ../../../../../../data/logs/data-plane.log 2>&1) & \
+	(cd data_plane/tupl_dp/bridge && MANAGEMENT_PLANE_URL=http://localhost:$(or $(PORT),8000)/api/v2 cargo run --bin bridge-server > ../../../data/logs/data-plane.log 2>&1) & \
 	sleep 3; \
-	(cd management_plane && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 >> ../data/logs/management-plane.log 2>&1) & \
+	(cd management_plane && MGMT_PLANE_PORT=$(or $(PORT),8000) uv run uvicorn app.main:app --reload --host 0.0.0.0 --port $(or $(PORT),8000) >> ../data/logs/management-plane.log 2>&1) & \
 	wait
 
 build-rust:
