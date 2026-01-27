@@ -59,7 +59,12 @@ async def _call_enforce(
     event: LooseIntentEvent,
     headers: dict[str, str],
 ) -> dict[str, Any]:
-    base_url = os.getenv("MANAGEMENT_PLANE_URL", "http://localhost:8000").rstrip("/")
+    management_plane_url = os.getenv("MANAGEMENT_PLANE_URL")
+    if management_plane_url:
+        base_url = management_plane_url.rstrip("/")
+    else:
+        mgmt_port = os.getenv("MGMT_PLANE_PORT", "8000")
+        base_url = f"http://localhost:{mgmt_port}".rstrip("/")
     url = f"{base_url}/api/v2/enforce"
 
     try:

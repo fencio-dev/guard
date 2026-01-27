@@ -111,7 +111,7 @@ ifeq ($(NO_MCP),1)
 	@echo "⏭️  MCP server disabled (no-mcp flag set)"
 else
 	@echo "📍 Starting MCP server on port 3001..."
-	@(cd management_plane && uv run python -m mcp_server >> $(LOG_DIR)/mcp-server.log 2>&1) & \
+	@(cd management_plane && MANAGEMENT_PLANE_URL=http://localhost:$(or $(PORT),8000) uv run python -m mcp_server >> $(LOG_DIR)/mcp-server.log 2>&1) & \
 	MCP_PID=$$!; \
 	echo "   MCP server PID: $$MCP_PID"; \
 	echo "   Logs: $(LOG_DIR)/mcp-server.log"
