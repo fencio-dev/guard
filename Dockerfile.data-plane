@@ -27,7 +27,7 @@ COPY data_plane/ /build/data_plane/
 RUN cd /build/data_plane/tupl_dp/bridge && \
     cargo build --release && \
     ls -la target/release/ && \
-    cp target/release/bridge /app/bridge-server
+    cp target/release/bridge-server /app/bridge-server
 
 # Stage 2: Runtime - Minimal execution environment
 # ============================================================================
