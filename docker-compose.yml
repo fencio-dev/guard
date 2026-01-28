@@ -24,12 +24,6 @@ services:
       - chromadb-data:/chroma/data
     networks:
       - guard-network
-    healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "8000"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
     restart: unless-stopped
     environment:
       - IS_PERSISTENT=TRUE
@@ -48,7 +42,7 @@ services:
       - guard-network
     depends_on:
       chromadb:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: ["CMD", "nc", "-z", "data-plane", "50051"]
       interval: 10s
