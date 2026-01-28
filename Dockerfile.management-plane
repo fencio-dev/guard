@@ -41,8 +41,8 @@ EXPOSE 8001
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 --start-period=15s \
     CMD curl -f http://localhost:8001/health || exit 1
 
-# Run the FastAPI application with uvicorn
+# Run the FastAPI application with uvicorn using uv
+# - uv run: Execute within the virtual environment created by uv sync
 # - --host 0.0.0.0: Listen on all network interfaces
 # - --port 8001: Listen on configured port
-# - --workers 4: Run with multiple worker processes (optional, can be adjusted)
-CMD ["uvicorn", "management_plane.app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["uv", "run", "uvicorn", "management_plane.app.main:app", "--host", "0.0.0.0", "--port", "8001"]
