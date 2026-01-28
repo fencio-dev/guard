@@ -104,7 +104,7 @@ services:
       - guard-network
     depends_on:
       management-plane:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-s", "-H", "Accept: text/event-stream", "http://mcp-server:3001/mcp"]
       interval: 10s
