@@ -81,7 +81,7 @@ services:
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - MGMT_PLANE_PORT=${MGMT_PLANE_PORT:-8001}
-      - DATA_PLANE_URL=grpc://data-plane:50051
+      - DATA_PLANE_URL=data-plane:50051
       - CHROMA_URL=http://chromadb:8000
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DATABASE_URL=${DATABASE_URL:-sqlite:///./guard.db}
@@ -104,9 +104,9 @@ services:
       - guard-network
     depends_on:
       management-plane:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-s", "-H", "Accept: text/event-stream", "http://mcp-server:3001/mcp"]
+      test: ["CMD", "curl", "-f", "http://mcp-server:3001/health"]
       interval: 10s
       timeout: 5s
       retries: 5

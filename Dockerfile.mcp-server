@@ -13,7 +13,7 @@ WORKDIR /app
 # Install system dependencies and uv package manager
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    git \
+    git curl \
     && rm -rf /var/lib/apt/lists/* && \
     pip install --no-cache-dir uv
 
@@ -31,10 +31,6 @@ RUN mkdir -p /app/data/logs
 
 # Expose MCP server port
 EXPOSE 3001
-
-# Health check - verify MCP server is responding
-HEALTHCHECK --interval=10s --timeout=5s --retries=5 --start-period=15s \
-    CMD curl -s -H "Accept: text/event-stream" http://localhost:3001/mcp || exit 1
 
 # Run the MCP server
 CMD ["uv", "run", "python", "-m", "mcp_server"]
