@@ -122,6 +122,12 @@ message RuleInstance {
   int64 created_at_ms = 7;
   map<string, ParamValue> params = 8;
   RuleAnchorsPayload anchors = 9;
+  // Policy type: "forbidden"|"context_allow"|"context_deny"|"context_defer"
+  string policy_type = 10;
+  // Drift threshold; 0.0 means drift enforcement is disabled
+  float drift_threshold = 11;
+  // JSON key/value patch applied when policy is MODIFY; empty otherwise
+  string modification_spec = 12;
 }
 
 // Parameter value (supports multiple types)
@@ -148,6 +154,10 @@ message EnforceRequest {
   repeated float intent_vector = 2;
   // Optional request ID from the caller; becomes session_id in telemetry
   string request_id = 3;
+  // Pre-computed drift score; 0.0 if no session context available
+  float drift_score = 4;
+  // Session ID for telemetry correlation
+  string session_id = 5;
 }
 
 // Response from enforcement
@@ -166,6 +176,15 @@ message EnforceResponse {
 
   // Echo of the request_id (or generated session_id if none was provided)
   string request_id = 5;
+
+  // Decision label: "ALLOW"|"DENY"|"MODIFY"|"STEP_UP"|"DEFER"
+  string decision_name = 6;
+
+  // JSON string of modified params; empty if decision is not MODIFY
+  string modified_params = 7;
+
+  // True if drift score caused the enforcement outcome
+  bool drift_triggered = 8;
 }
 
 // Evidence from a single rule evaluation

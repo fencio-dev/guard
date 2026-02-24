@@ -14,6 +14,93 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 // ================================================================================================
+// AARM POLICY TYPE
+// ================================================================================================
+
+/// AARM policy classification — determines which evaluation pass a policy
+/// participates in and what decision it can produce.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PolicyType {
+    /// Hard organizational limit. Evaluated first. Any match → DENY immediately.
+    Forbidden,
+    /// Allowed by static constraints but denied when session drift exceeds threshold.
+    ContextDeny,
+    /// Denied by default, allowed when constraints match and drift is within threshold.
+    /// This is the existing system's behaviour — the default for all current policies.
+    ContextAllow,
+    /// Match yields DEFER when context is ambiguous or drift threshold is crossed.
+    ContextDefer,
+}
+
+impl Default for PolicyType {
+    fn default() -> Self {
+        PolicyType::ContextAllow
+    }
+}
+
+impl From<&str> for PolicyType {
+    fn from(s: &str) -> Self {
+        match s {
+            "forbidden" => PolicyType::Forbidden,
+            "context_deny" => PolicyType::ContextDeny,
+            "context_allow" => PolicyType::ContextAllow,
+            "context_defer" => PolicyType::ContextDefer,
+            _ => PolicyType::ContextAllow,
+        }
+    }
+}
+
+// ================================================================================================
+// AARM DECISION
+// ================================================================================================
+
+/// The 5-outcome AARM decision enum. This is the outward-facing result type
+/// returned to callers via the v3 enforcement path.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Decision {
+    Allow,
+    Deny,
+    Modify,
+    StepUp,
+    Defer,
+}
+
+impl Decision {
+    /// Returns the string name used in API responses.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Decision::Allow => "ALLOW",
+            Decision::Deny => "DENY",
+            Decision::Modify => "MODIFY",
+            Decision::StepUp => "STEP_UP",
+            Decision::Defer => "DEFER",
+        }
+    }
+}
+
+impl fmt::Display for Decision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+// ================================================================================================
+// ENFORCEMENT DECISION
+// ================================================================================================
+
+/// Full enforcement result carrying the AARM decision and optional metadata.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnforcementDecision {
+    pub decision: Decision,
+    /// Populated only when decision == Modify. Contains the key/value patch
+    /// to apply to the action's tool_params.
+    pub modified_params: Option<serde_json::Value>,
+    /// True when the decision outcome was influenced by the session drift score
+    /// exceeding the policy's drift_threshold.
+    pub drift_triggered: bool,
+}
+
+// ================================================================================================
 // RULE INSTANCE TRAIT
 // ================================================================================================
 
@@ -51,6 +138,22 @@ pub trait RuleInstance: Send + Sync {
     /// Returns a Management Plane payload for encoding APIs (default empty for unsupported families)
     fn management_plane_payload(&self) -> Value {
         json!({})
+    }
+
+    /// AARM policy classification for this rule.
+    /// Defaults to ContextAllow (preserves existing behaviour for rules that do not set it).
+    fn policy_type(&self) -> PolicyType {
+        PolicyType::default()
+    }
+
+    /// Drift threshold for this rule; 0.0 means drift enforcement is disabled.
+    fn drift_threshold(&self) -> f32 {
+        0.0
+    }
+
+    /// Optional JSON patch applied when the decision is MODIFY.
+    fn modification_spec(&self) -> Option<&serde_json::Value> {
+        None
     }
 }
 

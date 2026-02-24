@@ -8,6 +8,7 @@ Handles:
 """
 
 import logging
+import sqlite3
 import time
 from typing import Optional
 from .nl_policy_parser import PolicyRules
@@ -16,6 +17,88 @@ from .chroma_client import upsert_rule_payload, fetch_rule_payload
 from .rule_encoding import build_tool_whitelist_anchors
 
 logger = logging.getLogger(__name__)
+
+
+def sync_active_policies_to_dataplane() -> None:
+    """
+    Re-install all active policies from SQLite + Chroma into the Rust data plane.
+
+    Called at startup to ensure the data plane HashMap is not stale after a
+    management plane restart.  Failures are logged as warnings; they do not
+    prevent the app from starting (the data plane may not be available yet).
+    """
+    import os
+    import numpy as np
+    from app.models import DesignBoundary
+    from app.services.policy_encoder import RuleVector
+    from app.services.dataplane_client import DataPlaneClient, DataPlaneError
+    from app.chroma_client import fetch_rule_payload as _fetch_payload
+
+    # Resolve SQLite path the same way policies.py does.
+    db_url = config.DATABASE_URL
+    if not db_url.startswith("sqlite:///"):
+        logger.warning("startup sync: unsupported DATABASE_URL scheme, skipping")
+        return
+    raw_path = db_url[len("sqlite:///"):]
+    sqlite_path = raw_path if raw_path.startswith("/") else os.path.abspath(raw_path)
+
+    if not os.path.exists(sqlite_path):
+        logger.info("startup sync: no SQLite DB yet, nothing to sync")
+        return
+
+    # Fetch all active policy rows across all tenants.
+    try:
+        conn = sqlite3.connect(sqlite_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT tenant_id, policy_id FROM policies_v2 WHERE status = 'active'"
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        logger.warning("startup sync: failed to query SQLite: %s", exc)
+        return
+
+    if not rows:
+        logger.info("startup sync: no active policies found, nothing to sync")
+        return
+
+    dp_url = config.data_plane_url
+    insecure = "localhost" in dp_url or "127.0.0.1" in dp_url
+    client = DataPlaneClient(url=dp_url, insecure=insecure)
+
+    synced = 0
+    errors = 0
+    for row in rows:
+        tenant_id = row["tenant_id"]
+        policy_id = row["policy_id"]
+        try:
+            payload = _fetch_payload(tenant_id, policy_id)
+            if not payload:
+                logger.warning("startup sync: no Chroma payload for %s/%s, skipping", tenant_id, policy_id)
+                errors += 1
+                continue
+
+            boundary = DesignBoundary.model_validate(payload["boundary"])
+            anchors = payload["anchors"]
+
+            # Reconstruct a RuleVector from stored anchor arrays.
+            rv = RuleVector()
+            for slot in ("action", "resource", "data", "risk"):
+                rows_data = anchors.get(f"{slot}_anchors") or []
+                if rows_data:
+                    rv.layers[slot] = np.array(rows_data, dtype=np.float32)
+                rv.anchor_counts[slot] = int(anchors.get(f"{slot}_count", 0))
+
+            client.install_policies([boundary], [rv])
+            synced += 1
+        except DataPlaneError as exc:
+            logger.warning("startup sync: data plane error for %s/%s: %s", tenant_id, policy_id, exc)
+            errors += 1
+        except Exception as exc:
+            logger.warning("startup sync: failed to sync %s/%s: %s", tenant_id, policy_id, exc)
+            errors += 1
+
+    logger.info("startup sync: synced %d active policy(s) to data plane (%d error(s))", synced, errors)
 
 # Import gRPC if available
 try:

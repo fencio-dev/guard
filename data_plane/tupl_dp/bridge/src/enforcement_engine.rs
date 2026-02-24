@@ -21,7 +21,7 @@ use crate::bridge::Bridge;
 use crate::rule_vector::RuleVector;
 use crate::telemetry::session::SliceComparisonDetail;
 use crate::telemetry::{EnforcementSession, RuleEvaluationEvent, SessionEvent, TelemetryRecorder};
-use crate::types::RuleInstance;
+use crate::types::{Decision, EnforcementDecision, PolicyType, RuleInstance};
 use crate::vector_comparison::{compare_intent_vs_rule, ComparisonResult, DecisionMode};
 
 const CONNECT_TIMEOUT_MS: u64 = 500;
@@ -66,7 +66,7 @@ pub struct EnforcementEngine {
 /// Result of enforcement evaluation
 #[derive(Debug, Clone)]
 pub struct EnforcementResult {
-    /// 0 = BLOCK, 1 = ALLOW
+    /// Legacy 0 = BLOCK, 1 = ALLOW (for backward compat on v2 path)
     pub decision: u8,
 
     /// Per-slot similarity scores [action, resource, data, risk]
@@ -80,6 +80,9 @@ pub struct EnforcementResult {
 
     /// Session ID used for telemetry (equals request_id if provided, else a generated UUID)
     pub session_id: String,
+
+    /// Full AARM enforcement decision (populated by the 5-pass evaluation path).
+    pub enforcement_decision: Option<EnforcementDecision>,
 }
 
 /// Evidence from a single rule evaluation
@@ -146,6 +149,7 @@ impl EnforcementEngine {
         intent_json: &str,
         vector_override: Option<[f32; 128]>,
         request_id: &str,
+        drift_score: f32,
     ) -> Result<EnforcementResult, String> {
         let session_start = Instant::now();
 
@@ -237,6 +241,11 @@ impl EnforcementEngine {
                         rules_evaluated: 0,
                         evidence: vec![],
                         session_id: session_id.clone().unwrap_or_else(|| request_id.to_string()),
+                        enforcement_decision: Some(EnforcementDecision {
+                            decision: Decision::Deny,
+                            modified_params: None,
+                            drift_triggered: false,
+                        }),
                     });
                 }
             }
@@ -285,6 +294,11 @@ impl EnforcementEngine {
                 rules_evaluated: 0,
                 evidence: vec![],
                 session_id: session_id.clone().unwrap_or_else(|| request_id.to_string()),
+                enforcement_decision: Some(EnforcementDecision {
+                    decision: Decision::Deny,
+                    modified_params: None,
+                    drift_triggered: false,
+                }),
             });
         }
 
@@ -305,14 +319,32 @@ impl EnforcementEngine {
             });
         }
 
-        // 3. Evaluate rules with OR semantics (first allow match → ALLOW; no match → fail-closed BLOCK)
+        // 3. Five-pass AARM evaluation.
+        //    All passes operate on the same rule set, partitioned by policy_type.
         let mut evidence = Vec::new();
         let evaluation_start = Instant::now();
 
-        for rule in &rules {
-            let rule_eval_start = Instant::now();
+        // Partition rules by policy_type (rules are already sorted by priority desc
+        // from get_rules_for_layer; each partition preserves that order).
+        let mut forbidden_rules: Vec<&Arc<dyn RuleInstance>> = Vec::new();
+        let mut context_deny_rules: Vec<&Arc<dyn RuleInstance>> = Vec::new();
+        let mut context_allow_rules: Vec<&Arc<dyn RuleInstance>> = Vec::new();
+        let mut context_defer_rules: Vec<&Arc<dyn RuleInstance>> = Vec::new();
 
-            // Record rule evaluation started
+        for rule in &rules {
+            match rule.policy_type() {
+                PolicyType::Forbidden => forbidden_rules.push(rule),
+                PolicyType::ContextDeny => context_deny_rules.push(rule),
+                PolicyType::ContextAllow => context_allow_rules.push(rule),
+                PolicyType::ContextDefer => context_defer_rules.push(rule),
+            }
+        }
+
+        // Helper closure: evaluate a single rule vector comparison and record telemetry.
+        // Returns (ComparisonResult, rule_vector) or an Err.
+        let evaluate_rule = |rule: &Arc<dyn RuleInstance>,
+                             evidence: &mut Vec<RuleEvidence>|
+         -> Result<(ComparisonResult, RuleVector), String> {
             if let (Some(ref telemetry), Some(ref sid)) = (&self.telemetry, &session_id) {
                 telemetry.with_session(sid, |session| {
                     session.add_event(SessionEvent::RuleEvaluationStarted {
@@ -323,37 +355,29 @@ impl EnforcementEngine {
                 });
             }
 
-            // Retrieve pre-encoded anchors from bridge
-            let rule_vector = if let Some(vector) = self.bridge.get_rule_anchors(rule.rule_id()) {
-                vector
-            } else {
-                return Err(format!(
-                    "Rule '{}' missing pre-encoded anchors (install-time encoding incomplete)",
-                    rule.rule_id()
-                ));
-            };
+            let rule_vector =
+                self.bridge
+                    .get_rule_anchors(rule.rule_id())
+                    .ok_or_else(|| {
+                        format!(
+                            "Rule '{}' missing pre-encoded anchors (install-time encoding incomplete)",
+                            rule.rule_id()
+                        )
+                    })?;
 
-            // Compare using semantic sandbox FFI
-            let result = self.compare_with_sandbox(&intent_vector, &rule_vector, &rule)?;
-            let rule_eval_duration = rule_eval_start.elapsed().as_micros() as u64;
+            let cmp = self.compare_with_sandbox(&intent_vector, &rule_vector, rule)?;
+            let rule_eval_duration = 0u64; // timing not re-measured in closure for simplicity
 
-            // Mark rule as recently evaluated (updates LRU timestamp in hot cache)
-            // This prevents it from being evicted, as it's actively being used
-            let _ = self.bridge.hot_cache.get_and_mark(rule.rule_id());
-
-            // Record evidence
             evidence.push(RuleEvidence {
                 rule_id: rule.rule_id().to_string(),
                 rule_name: rule.description().unwrap_or("").to_string(),
-                decision: result.decision,
-                similarities: result.slice_similarities,
+                decision: cmp.decision,
+                similarities: cmp.slice_similarities,
             });
 
-            // Record rule evaluation completed
             if let (Some(ref telemetry), Some(ref sid)) = (&self.telemetry, &session_id) {
-                let thresholds = self.get_thresholds(&rule);
-                let slice_details = self.build_slice_details(&result, &thresholds);
-
+                let thresholds = self.get_thresholds(rule);
+                let slice_details = self.build_slice_details(&cmp, &thresholds);
                 let payload = rule.management_plane_payload();
                 let rule_family = payload
                     .get("rule_type")
@@ -365,21 +389,19 @@ impl EnforcementEngine {
                     session.add_event(SessionEvent::RuleEvaluationCompleted {
                         timestamp_us: EnforcementSession::timestamp_us(),
                         rule_id: rule.rule_id().to_string(),
-                        decision: result.decision,
-                        similarities: result.slice_similarities,
+                        decision: cmp.decision,
+                        similarities: cmp.slice_similarities,
                         duration_us: rule_eval_duration,
                     });
-
-                    // Add detailed rule evaluation record
                     session.add_rule_evaluation(RuleEvaluationEvent {
                         rule_id: rule.rule_id().to_string(),
                         rule_family,
                         priority: rule.priority(),
                         description: rule.description().map(|s| s.to_string()),
-                        started_at_us: EnforcementSession::timestamp_us() - rule_eval_duration,
+                        started_at_us: EnforcementSession::timestamp_us(),
                         duration_us: rule_eval_duration,
-                        decision: result.decision,
-                        slice_similarities: result.slice_similarities,
+                        decision: cmp.decision,
+                        slice_similarities: cmp.slice_similarities,
                         thresholds,
                         anchor_counts: [
                             rule_vector.action_count,
@@ -393,99 +415,253 @@ impl EnforcementEngine {
                 });
             }
 
-            // OR semantics: first allow match → ALLOW (short-circuit)
-            // decision == 0 means this rule didn't match; continue to next rule
-            if result.decision == 1 {
-                println!(
-                    "ALLOWED by rule '{}' (priority {}). Short-circuiting.",
-                    rule.rule_id(),
-                    rule.priority()
-                );
+            Ok((cmp, rule_vector))
+        };
 
-                let remaining_rules = rules.len() - evidence.len();
+        // Helper: record final decision in telemetry and return EnforcementResult.
+        let finish = |evidence: Vec<RuleEvidence>,
+                      enforcement_decision: EnforcementDecision,
+                      final_similarities: [f32; 4],
+                      evaluation_start: Instant,
+                      session_start: Instant,
+                      telemetry: &Option<Arc<TelemetryRecorder>>,
+                      session_id: &Option<String>,
+                      request_id: &str|
+         -> EnforcementResult {
+            let legacy_decision: u8 = match enforcement_decision.decision {
+                Decision::Allow | Decision::Modify => 1,
+                _ => 0,
+            };
+            let evaluation_duration = evaluation_start.elapsed().as_micros() as u64;
+            let total_duration = session_start.elapsed().as_micros() as u64;
+            let rules_evaluated = evidence.len();
 
-                // Record short-circuit
-                if let (Some(ref telemetry), Some(ref sid)) = (&self.telemetry, &session_id) {
-                    telemetry.with_session(sid, |session| {
-                        session.add_event(SessionEvent::ShortCircuit {
-                            timestamp_us: EnforcementSession::timestamp_us(),
-                            rule_id: rule.rule_id().to_string(),
-                            rules_remaining: remaining_rules,
-                        });
-
-                        // Mark last rule as short-circuited
-                        if let Some(last_eval) = session.rules_evaluated.last_mut() {
-                            last_eval.short_circuited = true;
-                        }
-
-                        session.performance.short_circuited = true;
+            if let (Some(ref t), Some(ref sid)) = (telemetry, session_id) {
+                t.with_session(sid, |session| {
+                    session.add_event(SessionEvent::FinalDecision {
+                        timestamp_us: EnforcementSession::timestamp_us(),
+                        decision: legacy_decision,
+                        rules_evaluated,
+                        total_duration_us: total_duration,
                     });
-                }
-
-                let evaluation_duration = evaluation_start.elapsed().as_micros() as u64;
-                let total_duration = session_start.elapsed().as_micros() as u64;
-
-                // Record final decision
-                if let (Some(ref telemetry), Some(ref sid)) = (&self.telemetry, &session_id) {
-                    telemetry.with_session(sid, |session| {
-                        session.add_event(SessionEvent::FinalDecision {
-                            timestamp_us: EnforcementSession::timestamp_us(),
-                            decision: 1,
-                            rules_evaluated: evidence.len(),
-                            total_duration_us: total_duration,
-                        });
-                        session.performance.evaluation_duration_us = evaluation_duration;
-                        session.final_similarities = Some(result.slice_similarities);
-                    });
-
-                    // Complete session
-                    telemetry.complete_session(sid, 1, total_duration).ok();
-                }
-
-                return Ok(EnforcementResult {
-                    decision: 1,
-                    slice_similarities: result.slice_similarities,
-                    rules_evaluated: evidence.len(),
-                    evidence,
-                    session_id: session_id.clone().unwrap_or_else(|| request_id.to_string()),
+                    session.performance.evaluation_duration_us = evaluation_duration;
+                    session.final_similarities = Some(final_similarities);
                 });
+                t.complete_session(sid, legacy_decision, total_duration).ok();
+            }
+
+            EnforcementResult {
+                decision: legacy_decision,
+                slice_similarities: final_similarities,
+                rules_evaluated,
+                evidence,
+                session_id: session_id.clone().unwrap_or_else(|| request_id.to_string()),
+                enforcement_decision: Some(enforcement_decision),
+            }
+        };
+
+        // -----------------------------------------------------------------------
+        // Pass 1 — FORBIDDEN
+        //   Any match → DENY immediately. Drift is irrelevant.
+        // -----------------------------------------------------------------------
+        for rule in &forbidden_rules {
+            let (cmp, _) = evaluate_rule(rule, &mut evidence)?;
+            if cmp.decision == 1 {
+                println!(
+                    "DENY (FORBIDDEN): rule '{}' matched — blocking immediately",
+                    rule.rule_id()
+                );
+                let ed = EnforcementDecision {
+                    decision: Decision::Deny,
+                    modified_params: None,
+                    drift_triggered: false,
+                };
+                let sims = cmp.slice_similarities;
+                return Ok(finish(
+                    evidence,
+                    ed,
+                    sims,
+                    evaluation_start,
+                    session_start,
+                    &self.telemetry,
+                    &session_id,
+                    request_id,
+                ));
             }
         }
 
-        // No allow rule matched → fail-closed BLOCK
+        // -----------------------------------------------------------------------
+        // Pass 2 — CONTEXT_DENY
+        //   Match + drift exceeded → DENY with drift_triggered = true.
+        //   Match + drift disabled (threshold == 0.0) → DENY, drift_triggered = false.
+        // -----------------------------------------------------------------------
+        for rule in &context_deny_rules {
+            let (cmp, _) = evaluate_rule(rule, &mut evidence)?;
+            if cmp.decision == 1 {
+                let threshold = rule.drift_threshold();
+                let (drift_triggered, deny) = if threshold > 0.0 {
+                    (drift_score > threshold, drift_score > threshold)
+                } else {
+                    // threshold == 0.0 → always deny on match
+                    (false, true)
+                };
+                if deny {
+                    println!(
+                        "DENY (CONTEXT_DENY): rule '{}' matched (drift_triggered={})",
+                        rule.rule_id(),
+                        drift_triggered
+                    );
+                    let ed = EnforcementDecision {
+                        decision: Decision::Deny,
+                        modified_params: None,
+                        drift_triggered,
+                    };
+                    let sims = cmp.slice_similarities;
+                    return Ok(finish(
+                        evidence,
+                        ed,
+                        sims,
+                        evaluation_start,
+                        session_start,
+                        &self.telemetry,
+                        &session_id,
+                        request_id,
+                    ));
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------------
+        // Pass 3 — CONTEXT_ALLOW
+        //   Match + drift exceeded → STEP_UP.
+        //   Match + modification_spec present → MODIFY.
+        //   Match otherwise → ALLOW.
+        // -----------------------------------------------------------------------
+        for rule in &context_allow_rules {
+            let (cmp, _) = evaluate_rule(rule, &mut evidence)?;
+            if cmp.decision == 1 {
+                let threshold = rule.drift_threshold();
+                let sims = cmp.slice_similarities;
+
+                if threshold > 0.0 && drift_score > threshold {
+                    println!(
+                        "STEP_UP (CONTEXT_ALLOW): rule '{}' matched but drift exceeded threshold",
+                        rule.rule_id()
+                    );
+                    let ed = EnforcementDecision {
+                        decision: Decision::StepUp,
+                        modified_params: None,
+                        drift_triggered: true,
+                    };
+                    return Ok(finish(
+                        evidence,
+                        ed,
+                        sims,
+                        evaluation_start,
+                        session_start,
+                        &self.telemetry,
+                        &session_id,
+                        request_id,
+                    ));
+                } else if let Some(spec) = rule.modification_spec() {
+                    println!(
+                        "MODIFY (CONTEXT_ALLOW): rule '{}' matched with modification_spec",
+                        rule.rule_id()
+                    );
+                    let ed = EnforcementDecision {
+                        decision: Decision::Modify,
+                        modified_params: Some(spec.clone()),
+                        drift_triggered: false,
+                    };
+                    return Ok(finish(
+                        evidence,
+                        ed,
+                        sims,
+                        evaluation_start,
+                        session_start,
+                        &self.telemetry,
+                        &session_id,
+                        request_id,
+                    ));
+                } else {
+                    println!(
+                        "ALLOW (CONTEXT_ALLOW): rule '{}' matched",
+                        rule.rule_id()
+                    );
+                    let ed = EnforcementDecision {
+                        decision: Decision::Allow,
+                        modified_params: None,
+                        drift_triggered: false,
+                    };
+                    return Ok(finish(
+                        evidence,
+                        ed,
+                        sims,
+                        evaluation_start,
+                        session_start,
+                        &self.telemetry,
+                        &session_id,
+                        request_id,
+                    ));
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------------
+        // Pass 4 — CONTEXT_DEFER
+        //   Any match → DEFER.
+        // -----------------------------------------------------------------------
+        for rule in &context_defer_rules {
+            let (cmp, _) = evaluate_rule(rule, &mut evidence)?;
+            if cmp.decision == 1 {
+                println!(
+                    "DEFER (CONTEXT_DEFER): rule '{}' matched",
+                    rule.rule_id()
+                );
+                let ed = EnforcementDecision {
+                    decision: Decision::Defer,
+                    modified_params: None,
+                    drift_triggered: false,
+                };
+                let sims = cmp.slice_similarities;
+                return Ok(finish(
+                    evidence,
+                    ed,
+                    sims,
+                    evaluation_start,
+                    session_start,
+                    &self.telemetry,
+                    &session_id,
+                    request_id,
+                ));
+            }
+        }
+
+        // -----------------------------------------------------------------------
+        // Pass 5 — FAIL CLOSED
+        //   No rule matched in any pass → DENY.
+        // -----------------------------------------------------------------------
         println!(
-            "BLOCKED: No allow rules matched for layer {} (fail-closed)",
+            "DENY (FAIL-CLOSED): No rules matched for layer {}",
             layer
         );
 
-        let evaluation_duration = evaluation_start.elapsed().as_micros() as u64;
-        let total_duration = session_start.elapsed().as_micros() as u64;
         let avg_similarities = Self::average_similarities(&evidence);
-
-        // Record final decision
-        if let (Some(ref telemetry), Some(ref sid)) = (&self.telemetry, &session_id) {
-            telemetry.with_session(sid, |session| {
-                session.add_event(SessionEvent::FinalDecision {
-                    timestamp_us: EnforcementSession::timestamp_us(),
-                    decision: 0,
-                    rules_evaluated: evidence.len(),
-                    total_duration_us: total_duration,
-                });
-                session.performance.evaluation_duration_us = evaluation_duration;
-                session.final_similarities = Some(avg_similarities);
-            });
-
-            // Complete session
-            telemetry.complete_session(sid, 0, total_duration).ok();
-        }
-
-        Ok(EnforcementResult {
-            decision: 0,
-            slice_similarities: avg_similarities,
-            rules_evaluated: evidence.len(),
+        let ed = EnforcementDecision {
+            decision: Decision::Deny,
+            modified_params: None,
+            drift_triggered: false,
+        };
+        Ok(finish(
             evidence,
-            session_id: session_id.clone().unwrap_or_else(|| request_id.to_string()),
-        })
+            ed,
+            avg_similarities,
+            evaluation_start,
+            session_start,
+            &self.telemetry,
+            &session_id,
+            request_id,
+        ))
     }
 
     /// Encode intent to 128d vector by calling Management Plane

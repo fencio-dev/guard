@@ -99,6 +99,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info(f"Management Plane ready on {config.HOST}:{config.PORT}")
 
+    # Re-install active policies into the data plane to recover from a stale HashMap.
+    try:
+        from .rule_installer import sync_active_policies_to_dataplane
+        sync_active_policies_to_dataplane()
+    except Exception as e:
+        logger.warning("startup policy sync failed (data plane may not be ready): %s", e)
+
     # Start session cleanup background task (runs every 10 minutes)
     async def _session_cleanup_loop() -> None:
         while True:

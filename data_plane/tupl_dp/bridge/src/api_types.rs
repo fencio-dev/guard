@@ -10,6 +10,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::types::EnforcementDecision;
+
 /// Actor initiating the intent (user/service/llm/agent).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Actor {
@@ -96,6 +98,9 @@ pub struct ComparisonResult {
     pub boundaries_evaluated: u32,
     pub timestamp: f64,
     pub evidence: Vec<BoundaryEvidence>,
+    /// Populated by the v3 enforcement path. None on the legacy v2 path.
+    #[serde(default)]
+    pub enforcement_decision: Option<EnforcementDecision>,
 }
 
 #[cfg(test)]

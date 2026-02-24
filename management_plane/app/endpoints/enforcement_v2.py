@@ -55,7 +55,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from app.auth import User, get_current_tenant
-from app.models import ComparisonResult, IntentEvent, LooseDesignBoundary, LooseIntentEvent
+from app.models import ComparisonResult, EnforcementResponseV3, IntentEvent, LooseDesignBoundary, LooseIntentEvent
 from app.services import (
     BertCanonicalizer,
     CanonicalizedPredictionLogger,
@@ -266,32 +266,35 @@ async def _log_prediction_async(
 # ============================================================================
 
 
-@router.post("/enforce", response_model=EnforcementResponse, status_code=status.HTTP_200_OK)
+@router.post("/enforce", response_model=EnforcementResponseV3, status_code=status.HTTP_200_OK)
 async def enforce_v2(
     event: LooseIntentEvent,
     current_user: User = Depends(get_current_tenant),
-) -> EnforcementResponse:
+) -> EnforcementResponseV3:
     """
     Enforce intent with automatic canonicalization.
 
     Flow:
-    1. Canonicalize IntentEvent to canonical terms
-    2. Encode canonical intent to 128d vector
-    3. Proxy enforcement to Data Plane
-    4. Log canonicalization predictions asynchronously
-    5. Return decision with canonicalization trace
+    1. Validate IntentEvent (FastAPI handles via request body type)
+    2. Extract agent_id from actor.id
+    3. Canonicalize and encode intent to 128d current_vector
+    4. Ensure session row exists (write_call with decision="pending")
+    5. Initialize baseline vector if first call for this agent
+    6. Compute drift BEFORE gRPC call
+    7. Call gRPC enforce with drift_score and session_id
+    8. Derive decision_name from result
+    9. Return EnforcementResponseV3
 
     Args:
         event: IntentEvent (may contain non-canonical vocabulary)
         current_user: Authenticated user
 
     Returns:
-        EnforcementResponse with decision and canonicalization trace
+        EnforcementResponseV3 with decision, drift, and evidence
 
     Raises:
         HTTPException: On encoding, enforcement, or service errors
     """
-    start_time = time.time()
     request_id = str(uuid.uuid4())
 
     # Set tenant_id
@@ -300,7 +303,13 @@ async def enforce_v2(
     if not event.layer:
         event.layer = "L4"
 
-    logger.info(f"V2 enforce request: {request_id}, action={event.action}, resource={event.resource.type}")
+    # Step 2: Extract agent_id from actor.id
+    try:
+        agent_id = event.actor.id or ""
+    except Exception:
+        agent_id = ""
+
+    logger.info(f"V2 enforce request: {request_id}, action={event.action}, resource={event.resource.type}, agent_id={agent_id}")
 
     try:
         # Get services
@@ -316,7 +325,6 @@ async def enforce_v2(
         try:
             canonicalized = canonicalizer.canonicalize(event)
             canonical_event = canonicalized.canonical_event
-            trace_dict = canonicalized.to_trace_dict()
         except Exception as e:
             logger.error(f"Canonicalization failed: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail="Canonicalization failed")
@@ -335,47 +343,51 @@ async def enforce_v2(
                 )
             )
 
-        # Encode canonical intent
+        # Step 3: Encode canonical intent to current_vector
         try:
             vector = intent_encoder.encode(canonical_event)
         except Exception as e:
             logger.error(f"Intent encoding failed: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Intent encoding failed")
+            raise HTTPException(status_code=503, detail="Intent encoding failed")
 
-        # Enforce via Data Plane
+        current_vector = vector.tolist()
+
+        # Step 4: Ensure session row exists
+        action = getattr(canonical_event, "action", "") or ""
+        try:
+            session_store.write_call(agent_id, request_id, action, "pending")
+        except Exception as exc:
+            logger.error("session_store write_call failed: %s", exc)
+
+        # Step 5: Initialize baseline vector (first call only, no-op after)
+        if agent_id:
+            try:
+                session_store.initialize_session_vector(agent_id, current_vector)
+            except Exception as exc:
+                logger.error("session_store initialize_session_vector failed: %s", exc)
+
+        # Step 6: Compute drift BEFORE gRPC
+        if agent_id:
+            try:
+                drift_score = session_store.compute_and_update_drift(agent_id, current_vector)
+            except Exception as exc:
+                logger.error("session_store compute_and_update_drift failed: %s", exc)
+                drift_score = 0.0
+        else:
+            drift_score = 0.0
+
+        # Step 7: Call gRPC enforce
         client = get_data_plane_client()
 
         try:
             result: ComparisonResult = await asyncio.to_thread(
                 client.enforce,
                 canonical_event,
-                vector.tolist(),
+                current_vector,
                 request_id,
+                drift_score,
+                agent_id,
             )
-
-            try:
-                agent_id = getattr(getattr(canonical_event, "rate_limit_context", None), "agent_id", None) or ""
-                action = getattr(canonical_event, "action", "") or ""
-                session_store.write_call(agent_id, request_id, action, str(result.decision))
-            except Exception as exc:
-                logger.error("session_store write_call failed: %s", exc)
-
-            # Log enforcement outcome
-            enforcement_outcome = "ALLOW" if result.decision == 1 else "DENY"
-            for field in canonicalized.trace:
-                asyncio.create_task(
-                    _log_prediction_async(
-                        canon_logger,
-                        request_id,
-                        field.field_name,
-                        field.raw_value,
-                        field.canonical_value,
-                        field.confidence,
-                        field.source,
-                        enforcement_outcome,
-                    )
-                )
-
         except Exception as e:
             logger.error(f"Data Plane enforcement failed: {e}", exc_info=True)
 
@@ -386,33 +398,35 @@ async def enforce_v2(
                 ) from e
             raise HTTPException(status_code=500, detail="Enforcement failed") from e
 
-        # Build response
-        elapsed_ms = (time.time() - start_time) * 1000
+        # Step 8: Derive decision_name
+        if result.decision_name:
+            decision_name = result.decision_name
+        else:
+            decision_name = "ALLOW" if result.decision == 1 else "DENY"
 
-        decision = "ALLOW" if result.decision == 1 else "DENY"
+        # Log enforcement outcome asynchronously
+        for field in canonicalized.trace:
+            asyncio.create_task(
+                _log_prediction_async(
+                    canon_logger,
+                    request_id,
+                    field.field_name,
+                    field.raw_value,
+                    field.canonical_value,
+                    field.confidence,
+                    field.source,
+                    decision_name,
+                )
+            )
 
-        # Extract matched policy ID (IR ID) from evidence
-        # For ALLOW: take the first rule that permitted it as primary match
-        # For DENY: find the first rule that actually blocked it
-        policy_matched = None
-        if result.evidence:
-            if decision == "ALLOW":
-                policy_matched = result.evidence[0].boundary_id
-            else:
-                for ev in result.evidence:
-                    if ev.decision == 0:
-                        policy_matched = ev.boundary_id
-                        break
-
-        return EnforcementResponse(
-            decision=decision,
-            enforcement_latency_ms=elapsed_ms,
-            metadata={
-                "request_id": request_id,
-                "canonicalization_trace": trace_dict["canonicalization_trace"],
-                "policy_matched": policy_matched,
-                "evidence": [ev.model_dump() for ev in result.evidence],
-            },
+        # Step 9: Return EnforcementResponseV3
+        return EnforcementResponseV3(
+            decision=decision_name,
+            modified_params=result.modified_params,
+            drift_score=drift_score,
+            drift_triggered=result.drift_triggered,
+            slice_similarities=result.slice_similarities,
+            evidence=result.evidence,
         )
 
     except HTTPException:

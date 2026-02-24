@@ -10,7 +10,7 @@ Key constraints:
 - Deterministic serialization
 """
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import Literal, Optional
 
 
@@ -436,6 +436,20 @@ class DesignBoundary(BaseModel):
     createdAt: float  # Unix timestamp
     updatedAt: float  # Unix timestamp
 
+    # AARM Slice 6 fields
+    policy_type: Literal[
+        "forbidden", "context_allow", "context_deny", "context_defer"
+    ] = "context_allow"
+    drift_threshold: Optional[float] = None
+    modification_spec: Optional[dict] = None
+
+    @field_validator("drift_threshold")
+    @classmethod
+    def drift_threshold_range(cls, v):
+        if v is not None and not (0.0 < v <= 1.0):
+            raise ValueError("drift_threshold must be between 0.0 (exclusive) and 1.0 (inclusive)")
+        return v
+
 
 class LooseDesignBoundary(BaseModel):
     """
@@ -455,6 +469,20 @@ class LooseDesignBoundary(BaseModel):
     createdAt: float
     updatedAt: float
 
+    # AARM Slice 6 fields
+    policy_type: Literal[
+        "forbidden", "context_allow", "context_deny", "context_defer"
+    ] = "context_allow"
+    drift_threshold: Optional[float] = None
+    modification_spec: Optional[dict] = None
+
+    @field_validator("drift_threshold")
+    @classmethod
+    def drift_threshold_range(cls, v):
+        if v is not None and not (0.0 < v <= 1.0):
+            raise ValueError("drift_threshold must be between 0.0 (exclusive) and 1.0 (inclusive)")
+        return v
+
 
 class PolicyWriteRequest(BaseModel):
     """
@@ -473,6 +501,20 @@ class PolicyWriteRequest(BaseModel):
     rules: BoundaryRules
     constraints: LooseBoundaryConstraints
     notes: Optional[str] = None
+
+    # AARM Slice 6 fields
+    policy_type: Literal[
+        "forbidden", "context_allow", "context_deny", "context_defer"
+    ] = "context_allow"
+    drift_threshold: Optional[float] = None
+    modification_spec: Optional[dict] = None
+
+    @field_validator("drift_threshold")
+    @classmethod
+    def drift_threshold_range(cls, v):
+        if v is not None and not (0.0 < v <= 1.0):
+            raise ValueError("drift_threshold must be between 0.0 (exclusive) and 1.0 (inclusive)")
+        return v
 
 
 class PolicyListResponse(BaseModel):
@@ -555,6 +597,9 @@ class ComparisonResult(BaseModel):
     boundaries_evaluated: int = Field(default=0, ge=0)
     timestamp: float = Field(default=0.0)
     evidence: list[BoundaryEvidence] = Field(default_factory=list)
+    decision_name: str = Field(default="")
+    modified_params: Optional[dict] = Field(default=None)
+    drift_triggered: bool = Field(default=False)
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -567,6 +612,36 @@ class ComparisonResult(BaseModel):
             }
         }
     )
+
+
+class EnforcementResponseV3(BaseModel):
+    """
+    Response model for the v3 enforce endpoint.
+
+    Fields:
+    - decision: Policy outcome — one of ALLOW, DENY, MODIFY, STEP_UP, DEFER
+    - modified_params: Replacement tool params when decision == MODIFY; None otherwise
+    - drift_score: Per-call semantic distance from baseline (>= 0.0)
+    - drift_triggered: True when drift caused the enforcement outcome
+    - slice_similarities: Per-slot cosine similarities [action, resource, data, risk]
+    - evidence: Per-boundary evaluation details
+
+    Example:
+        {
+            "decision": "ALLOW",
+            "modified_params": null,
+            "drift_score": 0.12,
+            "drift_triggered": false,
+            "slice_similarities": [0.92, 0.88, 0.85, 0.90],
+            "evidence": []
+        }
+    """
+    decision: Literal["ALLOW", "DENY", "MODIFY", "STEP_UP", "DEFER"]
+    modified_params: Optional[dict] = Field(default=None)
+    drift_score: float = Field(ge=0.0)
+    drift_triggered: bool
+    slice_similarities: list[float] = Field(min_length=4, max_length=4)
+    evidence: list[BoundaryEvidence] = Field(default_factory=list)
 
 
 # ============================================================================
