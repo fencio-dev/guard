@@ -18,13 +18,15 @@ import os
 import sqlite3
 import time
 
+from app.settings import config
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # DB path resolution
 # ---------------------------------------------------------------------------
 
-_SESSION_DB_PATH: str = os.getenv("SESSION_DB_PATH", "/var/lib/guard/sessions.db")
+_SESSION_DB_PATH: str = config.SESSION_DB_PATH
 
 # ---------------------------------------------------------------------------
 # Internal helpers

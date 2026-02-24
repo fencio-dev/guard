@@ -75,6 +75,10 @@ class Config:
         "CANONICALIZATION_LOG_DIR",
         str(PROJECT_ROOT / "data" / "logs"),
     )
+    SESSION_DB_PATH: str = os.getenv(
+        "SESSION_DB_PATH",
+        str(PROJECT_ROOT / "data" / "sessions.db"),
+    )
     CANONICALIZATION_LOG_RETENTION_DAYS: int = int(os.getenv("CANONICALIZATION_LOG_RETENTION_DAYS", "90"))
     BERT_MODEL_PATH: str = os.getenv(
         "BERT_MODEL_PATH",
