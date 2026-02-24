@@ -1,0 +1,179 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ─── Base ──────────────────────────────────────────────────────────────── */
+
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  color: #1a1a1a;
+  background: #f0f2f5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── Layout ─────────────────────────────────────────────────────────────── */
+
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 28px;
+}
+
+/* ─── Header ─────────────────────────────────────────────────────────────── */
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px;
+  height: 52px;
+  border-bottom: 1px solid #dde1e7;
+  background: #fff;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.header-title {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+  color: #0f0f0f;
+}
+
+/* ─── Header Tenant Input ────────────────────────────────────────────────── */
+
+.header-tenant {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.header-tenant label {
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.header-tenant input {
+  width: 180px;
+  padding: 4px 8px;
+  font-size: 13px;
+  border: 1px solid #d1d5db;
+  border-radius: 5px;
+  background: #f9fafb;
+  color: #1a1a1a;
+}
+
+.header-tenant input:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+  background: #fff;
+}
+
+/* ─── Tab Bar ────────────────────────────────────────────────────────────── */
+
+.tab-bar {
+  display: flex;
+  gap: 0;
+  align-items: stretch;
+  height: 100%;
+}
+
+.tab-button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0 18px;
+  height: 100%;
+  font-size: 14px;
+  font-family: inherit;
+  color: #6b7280;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+  white-space: nowrap;
+}
+
+.tab-button:hover {
+  color: #1a1a1a;
+}
+
+.tab-button.active {
+  color: #1a1a1a;
+  font-weight: 600;
+  border-bottom-color: #1a1a1a;
+}
+
+/* ─── Content ────────────────────────────────────────────────────────────── */
+
+.content {
+  padding: 28px 0;
+}
+
+.tab-panel {
+  background: #fff;
+  border: 1px solid #dde1e7;
+  border-radius: 8px;
+  padding: 28px;
+  min-height: 240px;
+}
+
+/* ─── Focus outlines ─────────────────────────────────────────────────────── */
+/* Applied globally so inline-styled inputs/selects/buttons still get a      */
+/* visible focus ring for keyboard accessibility.                             */
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #4f7ef8;
+  outline-offset: 1px;
+}
+
+button:focus-visible {
+  outline: 2px solid #4f7ef8;
+  outline-offset: 2px;
+}
+
+/* ─── Tables ─────────────────────────────────────────────────────────────── */
+/* Baseline for any table that does not override via inline styles.           */
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+thead tr {
+  background: #f7f8fa;
+}
+
+tbody tr:nth-child(even) {
+  background: #fafbfc;
+}
+
+/* ─── Scrollbars (WebKit) ────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f0f2f5;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c8cdd5;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a0a8b4;
+}

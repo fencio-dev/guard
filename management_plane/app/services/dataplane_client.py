@@ -221,9 +221,11 @@ class DataPlaneClient:
         )
 
     def query_telemetry(self, **kwargs):
+        limit = min(kwargs.get('limit', 50), 500)
+        offset = kwargs.get('offset', 0)
         request = QueryTelemetryRequest(
-            limit=min(kwargs.get('limit', 50), 500),
-            offset=kwargs.get('offset', 0),
+            limit=limit,
+            offset=offset,
         )
         if kwargs.get('agent_id'): request.agent_id = kwargs['agent_id']
         if kwargs.get('tenant_id'): request.tenant_id = kwargs['tenant_id']
@@ -231,16 +233,37 @@ class DataPlaneClient:
         if kwargs.get('layer'): request.layer = kwargs['layer']
         if kwargs.get('start_time_ms') is not None: request.start_time_ms = kwargs['start_time_ms']
         if kwargs.get('end_time_ms') is not None: request.end_time_ms = kwargs['end_time_ms']
-        
+
         try:
-            return self.stub.QueryTelemetry(request, timeout=self.timeout)
+            response = self.stub.QueryTelemetry(request, timeout=self.timeout)
+            return {
+                "sessions": [
+                    {
+                        "session_id": s.session_id,
+                        "agent_id": s.agent_id,
+                        "tenant_id": s.tenant_id,
+                        "layer": s.layer,
+                        "timestamp_ms": s.timestamp_ms,
+                        "final_decision": s.final_decision,
+                        "rules_evaluated_count": s.rules_evaluated_count,
+                        "duration_us": s.duration_us,
+                        "intent_summary": s.intent_summary,
+                    }
+                    for s in response.sessions
+                ],
+                "total_count": response.total_count,
+                "limit": limit,
+                "offset": offset,
+            }
         except grpc.RpcError as e:
             raise DataPlaneError(f"QueryTelemetry failed: {e.details()}", e.code())
 
     def get_session(self, session_id: str):
         request = GetSessionRequest(session_id=session_id)
         try:
-            return self.stub.GetSession(request, timeout=self.timeout)
+            response = self.stub.GetSession(request, timeout=self.timeout)
+            session_data = json.loads(response.session_json) if response.session_json else {}
+            return {"session": session_data}
         except grpc.RpcError as e:
             raise DataPlaneError(f"GetSession failed: {e.details()}", e.code())
 
