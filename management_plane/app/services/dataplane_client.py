@@ -60,6 +60,8 @@ class DataPlaneClient:
         intent: Any,  # Can be IntentEvent or dict
         intent_vector: Optional[List[float]] = None,
         request_id: str = "",
+        drift_score: float = 0.0,
+        session_id: str = "",
     ) -> ComparisonResult:
         """Enforce rules against an IntentEvent."""
         # Validate required fields for v1.3
@@ -82,6 +84,8 @@ class DataPlaneClient:
             intent_event_json=intent_json,
             intent_vector=intent_vector or [],
             request_id=request_id,
+            drift_score=drift_score,
+            session_id=session_id,
         )
 
         metadata = []
@@ -218,6 +222,9 @@ class DataPlaneClient:
             boundaries_evaluated=response.rules_evaluated,
             timestamp=0.0,
             evidence=evidence,
+            decision_name=response.decision_name,
+            modified_params=json.loads(response.modified_params) if response.modified_params else None,
+            drift_triggered=response.drift_triggered,
         )
 
     def query_telemetry(self, **kwargs):

@@ -48,6 +48,10 @@ class PolicyConverter:
         for key, value in PolicyConverter._build_params(boundary).items():
             rule_instance.params[key].CopyFrom(value)
 
+        rule_instance.policy_type = boundary.policy_type
+        rule_instance.drift_threshold = boundary.drift_threshold if boundary.drift_threshold is not None else 0.0
+        rule_instance.modification_spec = json.dumps(boundary.modification_spec) if boundary.modification_spec else ""
+
         return rule_instance
 
     @staticmethod

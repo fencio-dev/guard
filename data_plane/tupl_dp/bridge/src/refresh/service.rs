@@ -1,7 +1,7 @@
 //! Event-driven rule refresh service.
 //!
-//! Triggers rule reload from warm storage on demand via gRPC endpoint.
-//! Replaces hot cache contents with latest from persistent storage.
+//! Triggers rule reload from SQLite on demand via gRPC endpoint.
+//! Replaces in-memory HashMap with latest from persistent storage.
 
 use crate::bridge::Bridge;
 use crate::types::now_ms;
@@ -29,32 +29,18 @@ impl RefreshService {
         Self { bridge }
     }
 
-    /// Trigger immediate refresh from warm storage.
+    /// Trigger immediate refresh from SQLite.
     ///
     /// Called via gRPC RefreshRules() endpoint.
-    /// Reloads rules from warm storage into hot cache.
-    ///
-    /// **Algorithm**:
-    /// - Clear the hot cache to remove any stale/evicted entries
-    /// - Reload all rule anchors from warm storage
-    /// - Re-insert each anchor into the hot cache
+    /// Rebuilds the in-memory HashMap from SQLite.
     ///
     /// # Returns
     /// Stats about the refresh operation or error message.
     pub async fn refresh_from_storage(&self) -> Result<RefreshStats, String> {
         let start = now_ms();
 
-        // Load all rule anchors from warm storage
-        let warm_anchors = self.bridge.warm_storage.load_anchors()?;
-        let num_rules = warm_anchors.len();
-
-        // Clear the hot cache to remove any stale/evicted entries
-        self.bridge.hot_cache.clear();
-
-        // Re-insert all anchors from warm storage into hot cache
-        for (rule_id, anchors) in warm_anchors {
-            self.bridge.hot_cache.insert(rule_id, anchors)?;
-        }
+        self.bridge.rebuild_from_db_public()?;
+        let num_rules = self.bridge.rule_count();
 
         let duration_ms = now_ms() - start;
 
@@ -70,7 +56,6 @@ impl RefreshService {
 mod tests {
     use super::*;
 
-    // Tests will be added when Bridge is available in test environment
     #[test]
     fn test_refresh_stats_creation() {
         let stats = RefreshStats {

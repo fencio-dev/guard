@@ -5,11 +5,14 @@ Stores per-agent call history for structured logging and audit purposes.
 Initialized at module import time; safe to import anywhere in the application.
 
 Schema (agent_sessions):
-  agent_id       TEXT PRIMARY KEY
-  action_history TEXT  -- JSON array of {request_id, action, decision, ts}
-  call_count     INTEGER DEFAULT 0
-  last_seen_at   REAL   -- Unix timestamp float
-  created_at     REAL   -- Unix timestamp float
+  agent_id         TEXT PRIMARY KEY
+  action_history   TEXT    -- JSON array of {request_id, action, decision, ts}
+  call_count       INTEGER DEFAULT 0
+  last_seen_at     REAL    -- Unix timestamp float
+  created_at       REAL    -- Unix timestamp float
+  initial_vector   BLOB    -- 128 x float32 little-endian bytes (AARM baseline r0)
+  cumulative_drift REAL    -- running sum of per-call semantic distances
+  last_vector      BLOB    -- most recent intent vector (128 x float32 bytes)
 """
 
 import json
@@ -17,6 +20,8 @@ import logging
 import os
 import sqlite3
 import time
+
+import numpy as np
 
 from app.settings import config
 
@@ -57,11 +62,14 @@ def _init_db() -> None:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS agent_sessions (
-                    agent_id       TEXT PRIMARY KEY,
-                    action_history TEXT    NOT NULL DEFAULT '[]',
-                    call_count     INTEGER NOT NULL DEFAULT 0,
-                    last_seen_at   REAL    NOT NULL,
-                    created_at     REAL    NOT NULL
+                    agent_id         TEXT PRIMARY KEY,
+                    action_history   TEXT NOT NULL DEFAULT '[]',
+                    call_count       INTEGER NOT NULL DEFAULT 0,
+                    last_seen_at     REAL NOT NULL,
+                    created_at       REAL NOT NULL,
+                    initial_vector   BLOB,
+                    cumulative_drift REAL NOT NULL DEFAULT 0.0,
+                    last_vector      BLOB
                 )
                 """
             )
@@ -212,6 +220,132 @@ def cleanup_expired() -> int:
             exc_info=True,
         )
         return 0
+
+
+# ---------------------------------------------------------------------------
+# AARM vector methods
+# ---------------------------------------------------------------------------
+
+
+def initialize_session_vector(agent_id: str, vector: list[float]) -> None:
+    """
+    Set initial_vector for the session if and only if it is currently NULL.
+
+    Uses a conditional UPDATE so the first caller wins and sets the AARM
+    baseline r0; any subsequent call for the same agent is a silent no-op.
+    On any exception: logs a structured error and returns without raising.
+    """
+    try:
+        blob = np.array(vector, dtype=np.float32).tobytes()
+
+        conn = _get_connection()
+        try:
+            conn.execute(
+                "UPDATE agent_sessions SET initial_vector = ? WHERE agent_id = ? AND initial_vector IS NULL",
+                (blob, agent_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    except Exception as exc:
+        logger.error(
+            "session_store: initialize_session_vector failed for agent_id=%s: %s",
+            agent_id,
+            exc,
+            exc_info=True,
+        )
+
+
+def compute_and_update_drift(agent_id: str, current_vector: list[float]) -> float:
+    """
+    Compute the per-call drift score against the AARM baseline, update the
+    session, and return the per-call drift value.
+
+    Steps:
+    1. Read initial_vector from the session row.
+    2. If initial_vector is NULL (legacy session or first-call race loser):
+       return 0.0 without touching cumulative_drift.
+    3. Compute drift = 1 - dot(initial_vector, current_vector).
+       Vectors are per-slot L2-normalized so dot == cosine similarity.
+    4. Add drift to cumulative_drift, store current_vector as last_vector,
+       and update last_seen_at.
+    5. Return the per-call drift (not the cumulative total).
+
+    On any exception: logs a structured error and returns 0.0.
+    """
+    try:
+        conn = _get_connection()
+        try:
+            row = conn.execute(
+                "SELECT initial_vector FROM agent_sessions WHERE agent_id = ?",
+                (agent_id,),
+            ).fetchone()
+
+            if row is None or row["initial_vector"] is None:
+                return 0.0
+
+            iv = np.frombuffer(row["initial_vector"], dtype=np.float32)
+            cv = np.array(current_vector, dtype=np.float32)
+            drift = float(1.0 - np.dot(iv, cv))
+            drift = max(0.0, drift)
+
+            last_blob = cv.tobytes()
+            now = time.time()
+
+            conn.execute(
+                """
+                UPDATE agent_sessions
+                SET cumulative_drift = cumulative_drift + ?,
+                    last_vector      = ?,
+                    last_seen_at     = ?
+                WHERE agent_id = ?
+                """,
+                (drift, last_blob, now, agent_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        return drift
+
+    except Exception as exc:
+        logger.error(
+            "session_store: compute_and_update_drift failed for agent_id=%s: %s",
+            agent_id,
+            exc,
+            exc_info=True,
+        )
+        return 0.0
+
+
+def get_session_drift(agent_id: str) -> float:
+    """
+    Return cumulative_drift for the agent, or 0.0 if no session exists.
+    On any exception: logs a structured error and returns 0.0.
+    """
+    try:
+        conn = _get_connection()
+        try:
+            row = conn.execute(
+                "SELECT cumulative_drift FROM agent_sessions WHERE agent_id = ?",
+                (agent_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        if row is None:
+            return 0.0
+        return float(row["cumulative_drift"])
+
+    except Exception as exc:
+        logger.error(
+            "session_store: get_session_drift failed for agent_id=%s: %s",
+            agent_id,
+            exc,
+            exc_info=True,
+        )
+        return 0.0
 
 
 # ---------------------------------------------------------------------------

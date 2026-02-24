@@ -203,6 +203,9 @@ impl DataPlane for DataPlaneService {
                 priority: proto_rule.priority,
                 enabled: proto_rule.enabled,
                 created_at_ms: proto_rule.created_at_ms,
+                policy_type: proto_rule.policy_type.clone(),
+                drift_threshold: proto_rule.drift_threshold,
+                modification_spec: proto_rule.modification_spec.clone(),
                 params: proto_rule
                     .params
                     .into_iter()
@@ -481,26 +484,49 @@ impl DataPlane for DataPlaneService {
             None
         };
 
+        let drift_score = req.drift_score;
+
         // Call enforcement engine
         let result = self
             .enforcement_engine
-            .enforce(&req.intent_event_json, vector_override, &request_id)
+            .enforce(&req.intent_event_json, vector_override, &request_id, drift_score)
             .await
             .map_err(|e| Status::internal(format!("Enforcement failed: {}", e)))?;
 
+        // Derive legacy 0/1 decision from EnforcementDecision for backward compat
+        let legacy_decision = if let Some(ref ed) = result.enforcement_decision {
+            use crate::types::Decision;
+            if ed.decision == Decision::Allow || ed.decision == Decision::Modify {
+                1i32
+            } else {
+                0i32
+            }
+        } else {
+            result.decision as i32
+        };
+
         println!(
             "Enforcement Decision: {}",
-            if result.decision == 1 {
-                "ALLOW"
-            } else {
-                "BLOCK"
-            }
+            if legacy_decision == 1 { "ALLOW" } else { "BLOCK" }
         );
         println!("Rules Evaluated: {}", result.rules_evaluated);
         println!("=================================================\n");
 
+        // Build new AARM response fields from EnforcementDecision (if present)
+        let (decision_name, modified_params, drift_triggered) =
+            if let Some(ref ed) = result.enforcement_decision {
+                let name = ed.decision.as_str().to_string();
+                let params_str = match &ed.modified_params {
+                    Some(v) => serde_json::to_string(v).unwrap_or_default(),
+                    None => String::new(),
+                };
+                (name, params_str, ed.drift_triggered)
+            } else {
+                (String::new(), String::new(), false)
+            };
+
         Ok(Response::new(EnforceResponse {
-            decision: result.decision as i32,
+            decision: legacy_decision,
             slice_similarities: result.slice_similarities.to_vec(),
             rules_evaluated: result.rules_evaluated as i32,
             evidence: result
@@ -514,6 +540,9 @@ impl DataPlane for DataPlaneService {
                 })
                 .collect(),
             request_id: result.session_id.clone(),
+            decision_name,
+            modified_params,
+            drift_triggered,
         }))
     }
 
@@ -674,6 +703,8 @@ fn extract_intent_summary(intent_json: &str) -> String {
 fn convert_design_boundary_rule(
     cp_rule: &ControlPlaneRule,
 ) -> Result<Arc<dyn RuleInstance>, String> {
+    use crate::types::PolicyType;
+
     let params_value = cp_params_to_value(&cp_rule.params);
 
     let description = cp_rule.params.get("notes").and_then(|value| value.as_string());
@@ -686,7 +717,23 @@ fn convert_design_boundary_rule(
         Some(cp_rule.layer.clone())
     };
 
-    Ok(Arc::new(DesignBoundaryRule::new(
+    let policy_type = PolicyType::from(cp_rule.policy_type.as_str());
+
+    let modification_spec: Option<serde_json::Value> = if cp_rule.modification_spec.is_empty() {
+        None
+    } else {
+        match serde_json::from_str(&cp_rule.modification_spec) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                return Err(format!(
+                    "Invalid modification_spec JSON for rule {}: {}",
+                    cp_rule.rule_id, e
+                ));
+            }
+        }
+    };
+
+    Ok(Arc::new(DesignBoundaryRule::new_with_policy(
         cp_rule.rule_id.clone(),
         cp_rule.priority as u32,
         scope,
@@ -695,6 +742,9 @@ fn convert_design_boundary_rule(
         cp_rule.enabled,
         description,
         params_value,
+        policy_type,
+        cp_rule.drift_threshold,
+        modification_spec,
     )) as Arc<dyn RuleInstance>)
 }
 

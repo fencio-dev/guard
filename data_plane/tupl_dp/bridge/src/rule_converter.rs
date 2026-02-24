@@ -13,6 +13,12 @@ pub struct ControlPlaneRule {
     pub enabled: bool,
     pub created_at_ms: i64,
     pub params: HashMap<String, ParamValue>,
+    /// AARM policy classification string: "forbidden"|"context_allow"|"context_deny"|"context_defer"
+    pub policy_type: String,
+    /// Drift threshold; 0.0 means drift enforcement is disabled
+    pub drift_threshold: f32,
+    /// JSON string for modification patch; empty if not a MODIFY rule
+    pub modification_spec: String,
 }
 
 /// Parameter value from the control plane payload.
