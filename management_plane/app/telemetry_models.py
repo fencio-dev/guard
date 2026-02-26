@@ -33,7 +33,7 @@ class SessionSummary(BaseModel):
     tenant_id: str = Field(..., description="Tenant ID")
     layer: str = Field(..., description="Layer (L0-L6)")
     timestamp_ms: int = Field(..., description="Unix timestamp in milliseconds")
-    final_decision: int = Field(..., description="0=BLOCK, 1=ALLOW")
+    final_decision: str = Field(..., description="ALLOW, DENY, MODIFY, STEP_UP, or DEFER")
     rules_evaluated_count: int = Field(..., description="Number of rules evaluated")
     duration_us: int = Field(..., description="Enforcement duration in microseconds")
     intent_summary: str = Field(..., description="Tool name or action summary")

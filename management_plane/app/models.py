@@ -5,7 +5,7 @@ This module defines Pydantic models that match the AARM policy engine schemas.
 All types must remain synchronized across Python, TypeScript, and Rust components.
 """
 
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 from typing import Literal, Optional
 
 
@@ -81,6 +81,9 @@ class SliceWeights(BaseModel):
     risk: float = Field(default=1.0, ge=0.0)
 
 
+ScoringMode = Literal["min", "weighted-avg"]
+
+
 class PolicyMatch(BaseModel):
     """NL match predicate m(a,C) — one description per slice."""
     op: str          # NL anchor for action slice (maps to AARM op)
@@ -98,6 +101,7 @@ class DesignBoundary(BaseModel):
     priority: int
     match: PolicyMatch      # m(a,C)
     thresholds: SliceThresholds   # keep these unchanged
+    scoring_mode: ScoringMode
     weights: Optional[SliceWeights] = None  # keep these unchanged
     drift_threshold: Optional[float] = None
     modification_spec: Optional[dict] = None
@@ -111,6 +115,14 @@ class DesignBoundary(BaseModel):
         if v is not None and not (0.0 < v <= 1.0):
             raise ValueError("drift_threshold must be between 0.0 (exclusive) and 1.0 (inclusive)")
         return v
+
+    @model_validator(mode="after")
+    def scoring_mode_weights_consistency(self):
+        if self.scoring_mode == "min" and self.weights is not None:
+            raise ValueError("weights must be omitted when scoring_mode is 'min'")
+        if self.scoring_mode == "weighted-avg" and self.weights is None:
+            raise ValueError("weights are required when scoring_mode is 'weighted-avg'")
+        return self
 
 
 class PolicyWriteRequest(BaseModel):
@@ -127,6 +139,7 @@ class PolicyWriteRequest(BaseModel):
     priority: int
     match: PolicyMatch
     thresholds: SliceThresholds
+    scoring_mode: ScoringMode
     weights: Optional[SliceWeights] = None
     drift_threshold: Optional[float] = None
     modification_spec: Optional[dict] = None
@@ -138,6 +151,14 @@ class PolicyWriteRequest(BaseModel):
         if v is not None and not (0.0 < v <= 1.0):
             raise ValueError("drift_threshold must be between 0.0 (exclusive) and 1.0 (inclusive)")
         return v
+
+    @model_validator(mode="after")
+    def scoring_mode_weights_consistency(self):
+        if self.scoring_mode == "min" and self.weights is not None:
+            raise ValueError("weights must be omitted when scoring_mode is 'min'")
+        if self.scoring_mode == "weighted-avg" and self.weights is None:
+            raise ValueError("weights are required when scoring_mode is 'weighted-avg'")
+        return self
 
 
 class PolicyListResponse(BaseModel):
@@ -180,6 +201,8 @@ class BoundaryEvidence(BaseModel):
     similarities: list[float] = Field(min_length=4, max_length=4)
     triggering_slice: str = Field(default="")
     anchor_matched: str = Field(default="")
+    thresholds: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
+    scoring_mode: ScoringMode
 
 
 class ComparisonResult(BaseModel):

@@ -51,6 +51,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             priority INTEGER NOT NULL DEFAULT 0,
             match_json TEXT NOT NULL,
             thresholds_json TEXT NOT NULL,
+            scoring_mode TEXT NOT NULL CHECK (scoring_mode IN ('min', 'weighted-avg')),
             weights_json TEXT,
             drift_threshold REAL,
             modification_spec_json TEXT,
@@ -64,6 +65,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_policies_v2_tenant ON policies_v2(tenant_id)"
     )
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(policies_v2)").fetchall()}
+    if "scoring_mode" not in columns:
+        conn.execute(
+            "ALTER TABLE policies_v2 ADD COLUMN scoring_mode TEXT NOT NULL DEFAULT 'weighted-avg'"
+        )
+
     conn.commit()
 
 
@@ -81,6 +89,7 @@ def _row_to_boundary(row: sqlite3.Row) -> DesignBoundary:
         priority=row["priority"],
         match=match,
         thresholds=thresholds,
+        scoring_mode=row["scoring_mode"],
         weights=weights,
         drift_threshold=row["drift_threshold"],
         modification_spec=modification_spec,
@@ -138,13 +147,14 @@ def create_policy_record(boundary: DesignBoundary, tenant_id: str) -> DesignBoun
                 priority,
                 match_json,
                 thresholds_json,
+                scoring_mode,
                 weights_json,
                 drift_threshold,
                 modification_spec_json,
                 notes,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 tenant_id,
@@ -155,6 +165,7 @@ def create_policy_record(boundary: DesignBoundary, tenant_id: str) -> DesignBoun
                 boundary.priority,
                 json.dumps(boundary.match.model_dump(), separators=(",", ":")),
                 json.dumps(boundary.thresholds.model_dump(), separators=(",", ":")),
+                boundary.scoring_mode,
                 json.dumps(boundary.weights.model_dump(), separators=(",", ":")) if boundary.weights else None,
                 boundary.drift_threshold,
                 json.dumps(boundary.modification_spec, separators=(",", ":")) if boundary.modification_spec else None,
@@ -188,6 +199,7 @@ def update_policy_record(boundary: DesignBoundary, tenant_id: str) -> DesignBoun
                 priority = ?,
                 match_json = ?,
                 thresholds_json = ?,
+                scoring_mode = ?,
                 weights_json = ?,
                 drift_threshold = ?,
                 modification_spec_json = ?,
@@ -202,6 +214,7 @@ def update_policy_record(boundary: DesignBoundary, tenant_id: str) -> DesignBoun
                 boundary.priority,
                 json.dumps(boundary.match.model_dump(), separators=(",", ":")),
                 json.dumps(boundary.thresholds.model_dump(), separators=(",", ":")),
+                boundary.scoring_mode,
                 json.dumps(boundary.weights.model_dump(), separators=(",", ":")) if boundary.weights else None,
                 boundary.drift_threshold,
                 json.dumps(boundary.modification_spec, separators=(",", ":")) if boundary.modification_spec else None,

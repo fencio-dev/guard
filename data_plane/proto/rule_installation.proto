@@ -197,6 +197,8 @@ message RuleEvidence {
   repeated float similarities = 4;  // Per-slot scores
   string triggering_slice = 5;  // Name of the slice with highest weighted contribution
   string anchor_matched = 6;    // Raw anchor text of the best-matching anchor in triggering slice
+  repeated float thresholds = 7;   // Per-slot thresholds [action, resource, data, risk]
+  string scoring_mode = 8;         // "weighted-avg" or "min"
 }
 
 // Request to query telemetry sessions

@@ -196,6 +196,12 @@ async def enforce_v2(
         else:
             decision_name = "ALLOW" if result.decision == 1 else "DENY"
 
+        # Step 8.5: Persist final decision to session store
+        try:
+            session_store.update_call_decision(agent_id, request_id, decision_name)
+        except Exception as exc:
+            logger.error("session_store update_call_decision failed: %s", exc)
+
         # Step 9: Return EnforcementResponse
         return EnforcementResponse(
             decision=decision_name,

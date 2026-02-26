@@ -68,6 +68,7 @@ def _boundary_from_request(
         priority=request.priority,
         match=request.match,
         thresholds=request.thresholds,
+        scoring_mode=request.scoring_mode,
         weights=request.weights,
         drift_threshold=request.drift_threshold,
         modification_spec=request.modification_spec,
@@ -217,6 +218,38 @@ async def update_policy(
         "result": "ok",
     })
     return boundary
+
+
+@router.patch("/{policy_id}/toggle", response_model=DesignBoundary, status_code=status.HTTP_200_OK)
+async def toggle_policy_status(
+    policy_id: str,
+    current_user: User = Depends(get_current_tenant),
+) -> DesignBoundary:
+    existing = fetch_policy_record(current_user.id, policy_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Policy not found")
+
+    now = time.time()
+    new_status = "disabled" if existing.status == "active" else "active"
+    updated = existing.model_copy(update={"status": new_status, "updated_at": now})
+
+    try:
+        update_policy_record(updated, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    rule_vector = _persist_anchor_payload(current_user.id, updated)
+    _install_to_dataplane(updated, rule_vector)
+
+    _write_policy_audit({
+        "ts": now,
+        "request_id": str(uuid.uuid4()),
+        "operation": "toggle_policy_status",
+        "policy_id": policy_id,
+        "tenant_id": current_user.id,
+        "result": new_status,
+    })
+    return updated
 
 
 @router.delete("/{policy_id}", response_model=PolicyDeleteResponse, status_code=status.HTTP_200_OK)

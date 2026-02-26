@@ -25,6 +25,15 @@ export async function createPolicy(data) {
   return res.json();
 }
 
+export async function togglePolicyStatus(id) {
+  const res = await fetch(`/api/v2/policies/${id}/toggle`, {
+    method: 'PATCH',
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) throw new Error(`Failed to toggle policy ${id}: ${res.status}`);
+  return res.json();
+}
+
 export async function updatePolicy(id, data) {
   const res = await fetch(`/api/v2/policies/${id}`, {
     method: 'PUT',

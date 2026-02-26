@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { fetchPolicies, deletePolicy } from '../api/policies';
+import { fetchPolicies, deletePolicy, togglePolicyStatus } from '../api/policies';
 import PolicyForm from './PolicyForm';
 
 function formatDate(timestamp) {
@@ -30,6 +30,19 @@ const styles = {
     color: '#fff',
     cursor: 'pointer',
   },
+  toolbarActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+  },
+  filterSelect: {
+    fontSize: 13,
+    padding: '6px 8px',
+    border: '1px solid #c8c8c8',
+    borderRadius: 4,
+    background: '#fff',
+    color: '#333',
+  },
   table: {
     width: '100%',
     borderCollapse: 'collapse',
@@ -48,20 +61,23 @@ const styles = {
     borderBottom: '1px solid #eee',
     verticalAlign: 'middle',
   },
+  statusToggle: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    cursor: 'pointer',
+    background: 'none',
+    border: 'none',
+    padding: 0,
+    font: 'inherit',
+    fontSize: 13,
+  },
   statusActive: {
     color: '#2d8a4e',
     fontWeight: 500,
   },
   statusDisabled: {
     color: '#999',
-  },
-  effectAllow: {
-    color: '#2d8a4e',
-    fontWeight: 500,
-  },
-  effectDeny: {
-    color: '#c0392b',
-    fontWeight: 500,
   },
   deleteButton: {
     fontSize: 12,
@@ -179,9 +195,18 @@ export default function PolicyList() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [deletingIds, setDeletingIds] = useState(new Set());
+  const [togglingIds, setTogglingIds] = useState(new Set());
   const [showForm, setShowForm] = useState(false);
   const [selectedPolicy, setSelectedPolicy] = useState(null);
   const [viewPolicy, setViewPolicy] = useState(null);
+  const [selectedStatus, setSelectedStatus] = useState('all');
+
+  const filteredPolicies = policies.filter((policy) => {
+    if (selectedStatus === 'all') {
+      return true;
+    }
+    return (policy.status || '').toLowerCase() === selectedStatus;
+  });
 
   async function load() {
     setLoading(true);
@@ -199,6 +224,22 @@ export default function PolicyList() {
   useEffect(() => {
     load();
   }, []);
+
+  async function handleToggle(id) {
+    setTogglingIds((prev) => new Set(prev).add(id));
+    try {
+      await togglePolicyStatus(id);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setTogglingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
 
   async function handleDelete(id) {
     setDeletingIds((prev) => new Set(prev).add(id));
@@ -220,11 +261,23 @@ export default function PolicyList() {
     <div>
       <div style={styles.toolbar}>
         <span style={styles.count}>
-          {loading ? '' : `${policies.length} ${policies.length === 1 ? 'policy' : 'policies'}`}
+          {loading ? '' : `${filteredPolicies.length} ${filteredPolicies.length === 1 ? 'policy' : 'policies'}`}
         </span>
-        <button style={styles.addButton} onClick={() => setShowForm(true)}>
-          Add Policy
-        </button>
+        <div style={styles.toolbarActions}>
+          <select
+            style={styles.filterSelect}
+            value={selectedStatus}
+            onChange={(e) => setSelectedStatus(e.target.value)}
+            aria-label="Filter policies by status"
+          >
+            <option value="all">All</option>
+            <option value="active">Active</option>
+            <option value="disabled">Disabled</option>
+          </select>
+          <button style={styles.addButton} onClick={() => setShowForm(true)}>
+            Add Policy
+          </button>
+        </div>
       </div>
 
       {showForm && (
@@ -345,55 +398,57 @@ export default function PolicyList() {
       {loading && <p style={styles.message}>Loading...</p>}
       {error && <p style={styles.error}>{error}</p>}
 
-      {!loading && !error && policies.length === 0 && (
-        <div style={styles.empty}>No policies found.</div>
+      {!loading && !error && filteredPolicies.length === 0 && (
+        <div style={styles.empty}>No policies found for this status.</div>
       )}
 
-      {!loading && !error && policies.length > 0 && (
+      {!loading && !error && filteredPolicies.length > 0 && (
         <table style={styles.table}>
           <thead>
             <tr>
               <th style={styles.th}>Name</th>
               <th style={styles.th}>Status</th>
               <th style={styles.th}>Type</th>
-              <th style={styles.th}>Layer</th>
-              <th style={styles.th}>Effect</th>
               <th style={styles.th}>Created</th>
               <th style={styles.th}>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {policies.map((policy) => {
+            {filteredPolicies.map((policy) => {
               const isDeleting = deletingIds.has(policy.id);
+              const isToggling = togglingIds.has(policy.id);
+              const isActive = policy.status === 'active';
               return (
                 <tr key={policy.id}>
                   <td style={styles.td}>{policy.name}</td>
                   <td style={styles.td}>
-                    <span
-                      style={
-                        policy.status === 'active'
-                          ? styles.statusActive
-                          : styles.statusDisabled
-                      }
+                    <button
+                      style={{
+                        ...styles.statusToggle,
+                        opacity: isToggling ? 0.5 : 1,
+                        cursor: isToggling ? 'wait' : 'pointer',
+                      }}
+                      disabled={isToggling}
+                      title={isActive ? 'Click to disable' : 'Click to enable'}
+                      onClick={() => handleToggle(policy.id)}
                     >
-                      {policy.status}
-                    </span>
+                      <span
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: '50%',
+                          background: isActive ? '#2d8a4e' : '#ccc',
+                          flexShrink: 0,
+                        }}
+                      />
+                      <span style={isActive ? styles.statusActive : styles.statusDisabled}>
+                        {policy.status}
+                      </span>
+                    </button>
                   </td>
-                  <td style={styles.td}>{policy.type}</td>
-                  <td style={styles.td}>{policy.layer ?? '—'}</td>
-                  <td style={styles.td}>
-                    <span
-                      style={
-                        policy.rules?.effect === 'allow'
-                          ? styles.effectAllow
-                          : styles.effectDeny
-                      }
-                    >
-                      {policy.rules?.effect}
-                    </span>
-                  </td>
+                  <td style={styles.td}>{policy.policy_type ?? policy.type ?? '—'}</td>
                   <td style={styles.td}>{formatDate(policy.created_at)}</td>
-                  <td style={styles.td}>
+                  <td style={{ ...styles.td, whiteSpace: 'nowrap' }}>
                     <button
                       style={styles.viewButton}
                       onClick={() => setViewPolicy(policy)}

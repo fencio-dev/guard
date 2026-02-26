@@ -41,7 +41,7 @@ def query_sessions(
                 "tenant_id": s.get("tenant_id") or tenant_id or "",
                 "layer": s.get("layer") or layer or "",
                 "timestamp_ms": s["last_seen_at_ms"],
-                "final_decision": 1 if s["final_decision"] == "allow" else 0,
+                "final_decision": (s["final_decision"] or "").upper() or "DENY",
                 "rules_evaluated_count": s["call_count"],
                 "duration_us": 0,
                 "intent_summary": s["final_decision"] or "",
@@ -56,12 +56,15 @@ def query_sessions(
     )
 
 
-@router.get("/telemetry/sessions/{session_id}", response_model=SessionDetail)
+@router.get("/telemetry/sessions/{agent_id}", response_model=SessionDetail)
 def get_session_detail(
-    session_id: str,
+    agent_id: str,
 ):
-    session = session_store.get_session(session_id)
+    session = session_store.get_session(agent_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    session.pop("initial_vector", None)
+    session.pop("last_vector", None)
 
     return SessionDetail(session=session)

@@ -547,6 +547,8 @@ impl DataPlane for DataPlaneService {
                     similarities: ev.similarities.to_vec(),
                     triggering_slice: ev.triggering_slice.clone(),
                     anchor_matched: ev.anchor_matched.clone(),
+                    thresholds: ev.thresholds.to_vec(),
+                    scoring_mode: ev.scoring_mode.clone(),
                 })
                 .collect(),
             request_id: result.session_id.clone(),

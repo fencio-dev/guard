@@ -65,7 +65,7 @@ class IntentEncoder(SemanticEncoder):
         Returns:
             Slot text string
         """
-        return event.op
+        return canonicalize_params(event.op)
 
     def _build_resource_slot(self, event: IntentEvent) -> str:
         """
@@ -77,7 +77,7 @@ class IntentEncoder(SemanticEncoder):
         Returns:
             Slot text string
         """
-        return event.t
+        return canonicalize_params(event.t)
 
     def _build_data_slot(self, event: IntentEvent) -> str:
         """
@@ -103,7 +103,7 @@ class IntentEncoder(SemanticEncoder):
         """
         if event.ctx is None or event.ctx.initial_request is None:
             return ""
-        return event.ctx.initial_request
+        return canonicalize_params(event.ctx.initial_request)
 
     def encode(self, event: IntentEvent) -> np.ndarray:
         """

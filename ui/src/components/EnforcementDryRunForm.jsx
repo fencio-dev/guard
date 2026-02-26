@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { runEnforce } from '../api/enforce';
+import { fetchPolicies } from '../api/policies';
 import EnforcementResultPanel from './EnforcementResultPanel';
 import RecentRunsPanel from './RecentRunsPanel';
+import SuggestedIntentsPanel from './SuggestedIntentsPanel';
 
 const styles = {
   panel: {
@@ -123,6 +125,32 @@ const styles = {
     marginTop: '3px',
     lineHeight: '1.4',
   },
+  labelRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+  },
+  modeToggle: {
+    fontSize: 11,
+    color: '#888',
+    cursor: 'pointer',
+    userSelect: 'none',
+    marginLeft: 'auto',
+  },
+  modeToggleActive: {
+    fontWeight: 700,
+    color: '#1a1a1a',
+  },
+  inputInvalid: {
+    fontSize: 13,
+    padding: '6px 10px',
+    border: '1px solid #c0392b',
+    borderRadius: 4,
+    fontFamily: 'inherit',
+    background: '#fff',
+    resize: 'vertical',
+    minHeight: 72,
+  },
 };
 
 const DEFAULT_STATE = {
@@ -142,7 +170,7 @@ const DEFAULT_STATE = {
 };
 
 const DRY_RUN_HISTORY_STORAGE_KEY = 'guard:ui:enforcement:dry-run-history';
-const DRY_RUN_HISTORY_STORAGE_VERSION = 1;
+const DRY_RUN_HISTORY_STORAGE_VERSION = 2;
 const MAX_DRY_RUN_HISTORY = 10;
 
 const FORM_SNAPSHOT_KEYS = Object.keys(DEFAULT_STATE);
@@ -181,6 +209,14 @@ function sanitizeFormSnapshot(value) {
   };
 }
 
+function sanitizeResult(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) return null;
+  if (typeof value.decision !== 'string') return null;
+  if (!Array.isArray(value.slice_similarities) || value.slice_similarities.length !== 4) return null;
+  return value;
+}
+
 function sanitizeRunEntry(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   if (typeof value.decision !== 'string') return null;
@@ -190,6 +226,7 @@ function sanitizeRunEntry(value) {
     formSnapshot: sanitizeFormSnapshot(value.formSnapshot),
     decision: value.decision,
     ts: value.ts,
+    result: sanitizeResult(value.result),
   };
 }
 
@@ -228,7 +265,7 @@ function loadDryRunHistoryFromSessionStorage() {
 
     const parsed = JSON.parse(raw);
     if (!isPlainObject(parsed)) return fallback;
-    if (parsed.version !== 1) return fallback;
+    if (parsed.version !== 2) return fallback;
     if (!Array.isArray(parsed.runs)) return fallback;
     if (!(parsed.pinnedIndex === null || Number.isInteger(parsed.pinnedIndex))) return fallback;
 
@@ -277,19 +314,44 @@ export default function EnforcementDryRunForm() {
 
   const [hydratedHistory] = useState(() => loadDryRunHistoryFromSessionStorage());
 
+  const [jsonMode, setJsonMode] = useState({ op: false, t: false, p: false });
+  const [jsonErrors, setJsonErrors] = useState({ op: null, t: null, p: null });
+
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
   const [submitError, setSubmitError] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
   const [runs, setRuns] = useState(() => hydratedHistory.runs);
   const [pinnedIndex, setPinnedIndex] = useState(() => hydratedHistory.pinnedIndex);
+  const [policies, setPolicies] = useState([]);
 
   useEffect(() => {
     persistDryRunHistoryToSessionStorage(runs, pinnedIndex);
   }, [runs, pinnedIndex]);
 
+  useEffect(() => {
+    fetchPolicies().then(setPolicies).catch(() => {});
+  }, []);
+
   function setField(key, value) {
     setFormState(s => ({ ...s, [key]: value }));
+  }
+
+  function toggleJsonMode(field) {
+    setJsonMode((prev) => ({ ...prev, [field]: !prev[field] }));
+    setJsonErrors((prev) => ({ ...prev, [field]: null }));
+  }
+
+  function handleAnchorChange(field, value) {
+    setField(field, value);
+    if (jsonMode[field]) {
+      try {
+        JSON.parse(value);
+        setJsonErrors((prev) => ({ ...prev, [field]: null }));
+      } catch {
+        setJsonErrors((prev) => ({ ...prev, [field]: 'Invalid JSON' }));
+      }
+    }
   }
 
   function validate() {
@@ -364,7 +426,7 @@ export default function EnforcementDryRunForm() {
       const data = await runEnforce(payload);
       setResult(data);
 
-      const entry = { formSnapshot: { ...formState }, decision: data.decision, ts: Date.now() };
+      const entry = { formSnapshot: { ...formState }, decision: data.decision, ts: Date.now(), result: data };
       const next = [entry, ...runs];
 
       let newPinnedIndex = pinnedIndex !== null ? pinnedIndex + 1 : null;
@@ -395,9 +457,9 @@ export default function EnforcementDryRunForm() {
     setPinnedIndex(prev => (prev === index ? null : index));
   }
 
-  function handleSelectRun(formSnapshot) {
-    setFormState(sanitizeFormSnapshot(formSnapshot));
-    setResult(null);
+  function handleSelectRun(item) {
+    setFormState(sanitizeFormSnapshot(item.formSnapshot));
+    setResult(item.result ?? null);
     setSubmitError(null);
     setFieldErrors({});
   }
@@ -412,6 +474,8 @@ export default function EnforcementDryRunForm() {
   return (
     <div style={styles.panel}>
       <div style={styles.panelTitle}>Enforcement Dry Run</div>
+      <div style={{ display: 'flex', gap: 28, alignItems: 'flex-start' }}>
+      <div style={{ flex: '1 1 0', minWidth: 0 }}>
       <form onSubmit={handleSubmit} noValidate>
 
         <fieldset style={styles.fieldset}>
@@ -489,38 +553,107 @@ export default function EnforcementDryRunForm() {
           <small style={{ ...styles.hint, marginBottom: 12 }}>These fields describe the action a = (op, t, p). They are embedded as semantic vectors and compared against policy match anchors.</small>
           <div style={styles.grid}>
             <div style={styles.field}>
-              <label style={styles.label}>Operation (NL) *</label>
-              <input
-                style={styles.input}
-                type="text"
-                value={formState.op}
-                onChange={(e) => setField('op', e.target.value)}
-                placeholder="e.g. read from users table"
-              />
+              <div style={styles.labelRow}>
+                <label style={styles.label}>Operation *</label>
+                <span style={styles.modeToggle}>
+                  <span
+                    style={!jsonMode.op ? styles.modeToggleActive : {}}
+                    onClick={() => jsonMode.op && toggleJsonMode('op')}
+                  >NL</span>
+                  {' | '}
+                  <span
+                    style={jsonMode.op ? styles.modeToggleActive : {}}
+                    onClick={() => !jsonMode.op && toggleJsonMode('op')}
+                  >JSON</span>
+                </span>
+              </div>
+              {jsonMode.op ? (
+                <textarea
+                  style={jsonErrors.op ? styles.inputInvalid : { ...styles.textarea }}
+                  value={formState.op}
+                  onChange={(e) => handleAnchorChange('op', e.target.value)}
+                  placeholder='e.g. {"action": "read", "scope": "users"}'
+                />
+              ) : (
+                <input
+                  style={styles.input}
+                  type="text"
+                  value={formState.op}
+                  onChange={(e) => setField('op', e.target.value)}
+                  placeholder="e.g. read from users table"
+                />
+              )}
               {fieldErrors.op && <span style={styles.inlineError}>{fieldErrors.op}</span>}
+              {jsonErrors.op && <span style={styles.inlineError}>{jsonErrors.op}</span>}
               <small style={styles.hint}>What is the agent trying to do? Use natural language. E.g. 'query user records', 'send a summary email', 'write to S3'.</small>
             </div>
             <div style={styles.field}>
-              <label style={styles.label}>Target / Tool (NL) *</label>
-              <input
-                style={styles.input}
-                type="text"
-                value={formState.t}
-                onChange={(e) => setField('t', e.target.value)}
-                placeholder="e.g. postgres users table"
-              />
+              <div style={styles.labelRow}>
+                <label style={styles.label}>Target / Tool *</label>
+                <span style={styles.modeToggle}>
+                  <span
+                    style={!jsonMode.t ? styles.modeToggleActive : {}}
+                    onClick={() => jsonMode.t && toggleJsonMode('t')}
+                  >NL</span>
+                  {' | '}
+                  <span
+                    style={jsonMode.t ? styles.modeToggleActive : {}}
+                    onClick={() => !jsonMode.t && toggleJsonMode('t')}
+                  >JSON</span>
+                </span>
+              </div>
+              {jsonMode.t ? (
+                <textarea
+                  style={jsonErrors.t ? styles.inputInvalid : { ...styles.textarea }}
+                  value={formState.t}
+                  onChange={(e) => handleAnchorChange('t', e.target.value)}
+                  placeholder='e.g. {"tool": "postgres", "table": "users"}'
+                />
+              ) : (
+                <input
+                  style={styles.input}
+                  type="text"
+                  value={formState.t}
+                  onChange={(e) => setField('t', e.target.value)}
+                  placeholder="e.g. postgres users table"
+                />
+              )}
               {fieldErrors.t && <span style={styles.inlineError}>{fieldErrors.t}</span>}
+              {jsonErrors.t && <span style={styles.inlineError}>{jsonErrors.t}</span>}
               <small style={styles.hint}>What resource or tool is being accessed? E.g. 'postgres users table', 'Gmail API', 'production S3 bucket'.</small>
             </div>
             <div style={styles.field}>
-              <label style={styles.label}>Parameters (NL)</label>
-              <input
-                style={styles.input}
-                type="text"
-                value={formState.p}
-                onChange={(e) => setField('p', e.target.value)}
-                placeholder="optional"
-              />
+              <div style={styles.labelRow}>
+                <label style={styles.label}>Parameters</label>
+                <span style={styles.modeToggle}>
+                  <span
+                    style={!jsonMode.p ? styles.modeToggleActive : {}}
+                    onClick={() => jsonMode.p && toggleJsonMode('p')}
+                  >NL</span>
+                  {' | '}
+                  <span
+                    style={jsonMode.p ? styles.modeToggleActive : {}}
+                    onClick={() => !jsonMode.p && toggleJsonMode('p')}
+                  >JSON</span>
+                </span>
+              </div>
+              {jsonMode.p ? (
+                <textarea
+                  style={jsonErrors.p ? styles.inputInvalid : { ...styles.textarea }}
+                  value={formState.p}
+                  onChange={(e) => handleAnchorChange('p', e.target.value)}
+                  placeholder='e.g. {"columns": ["email", "name"]}'
+                />
+              ) : (
+                <input
+                  style={styles.input}
+                  type="text"
+                  value={formState.p}
+                  onChange={(e) => setField('p', e.target.value)}
+                  placeholder="optional"
+                />
+              )}
+              {jsonErrors.p && <span style={styles.inlineError}>{jsonErrors.p}</span>}
               <small style={styles.hint}>Optional. Describe the parameters of this action. E.g. 'filtering by user_id and date range'. Leave blank if not relevant.</small>
             </div>
           </div>
@@ -604,8 +737,11 @@ export default function EnforcementDryRunForm() {
         </div>
       </form>
 
-      <EnforcementResultPanel result={result} />
-      <RecentRunsPanel runs={runs} pinnedIndex={pinnedIndex} onSelect={handleSelectRun} onPin={handlePinRun} />
+      </div>
+      <SuggestedIntentsPanel onSelect={(formSnapshot) => handleSelectRun({ formSnapshot, result: null })} />
+      </div>
+      <EnforcementResultPanel result={result} policies={policies} />
+      <RecentRunsPanel runs={runs} pinnedIndex={pinnedIndex} onSelect={(formSnapshot) => { const item = runs.find(r => r.formSnapshot === formSnapshot) ?? { formSnapshot, result: null }; handleSelectRun(item); }} onPin={handlePinRun} onClear={() => { setRuns([]); setPinnedIndex(null); }} />
     </div>
   );
 }

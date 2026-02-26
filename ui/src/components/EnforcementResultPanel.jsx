@@ -102,12 +102,13 @@ const styles = {
     borderRadius: 3,
     height: 10,
     overflow: 'hidden',
+    position: 'relative',
   },
   barValue: {
     fontSize: 12,
     color: '#1a1a1a',
     fontFamily: 'monospace',
-    width: 36,
+    width: 80,
     textAlign: 'right',
     flexShrink: 0,
   },
@@ -134,20 +135,42 @@ function DecisionBadge({ decision }) {
   );
 }
 
-function SliceBars({ similarities }) {
+function SliceBars({ similarities, thresholds }) {
   if (!Array.isArray(similarities)) return null;
+  const resolvedThresholds =
+    Array.isArray(thresholds) && thresholds.length === 4
+      ? thresholds
+      : [0, 0, 0, 0];
   return (
     <div>
       {SLICE_LABELS.map((label, i) => {
         const value = similarities[i] ?? 0;
+        const threshold = resolvedThresholds[i] ?? 0;
         const pct = Math.min(Math.max(value, 0), 1) * 100;
+        let barColor = '#4a90d9';
+        if (threshold > 0) {
+          barColor = value >= threshold ? '#2e7d32' : '#c62828';
+        }
         return (
           <div key={label} style={styles.barLabelRow}>
             <span style={styles.barLabel}>{label}</span>
             <div style={styles.barContainer}>
-              <div style={{ width: `${pct}%`, height: '100%', background: '#4a90d9', borderRadius: 3 }} />
+              <div style={{ width: `${pct}%`, height: '100%', background: barColor, borderRadius: 3 }} />
+              {threshold > 0 && (
+                <div style={{
+                  position: 'absolute',
+                  left: `${Math.min(threshold, 1) * 100}%`,
+                  top: 0,
+                  bottom: 0,
+                  width: 2,
+                  background: 'rgba(0,0,0,0.4)',
+                  borderRadius: 1,
+                }} />
+              )}
             </div>
-            <span style={styles.barValue}>{value.toFixed(2)}</span>
+            <span style={styles.barValue}>
+              {threshold > 0 ? `${value.toFixed(2)} / ${threshold.toFixed(2)}` : value.toFixed(2)}
+            </span>
           </div>
         );
       })}
@@ -155,7 +178,7 @@ function SliceBars({ similarities }) {
   );
 }
 
-function EvidenceTable({ evidence }) {
+function EvidenceTable({ evidence, policyMap }) {
   if (!Array.isArray(evidence) || evidence.length === 0) return null;
   return (
     <div style={styles.tableWrapper}>
@@ -166,22 +189,73 @@ function EvidenceTable({ evidence }) {
             <th style={styles.th}>Effect</th>
             <th style={styles.th}>Match</th>
             <th style={styles.th}>Triggering Slice</th>
-            <th style={styles.th}>Sims (action/resource/data/risk)</th>
+            <th style={styles.th}>Scoring Mode</th>
+            <th style={styles.th}>Similarities / Thresholds</th>
           </tr>
         </thead>
         <tbody>
           {evidence.map((entry, i) => {
             const sims = Array.isArray(entry.similarities) ? entry.similarities : [];
-            const simsFormatted = SLICE_LABELS.map((_, idx) =>
-              sims[idx] != null ? sims[idx].toFixed(2) : '—'
-            ).join(' / ');
+            const thresholds = Array.isArray(entry.thresholds) && entry.thresholds.length === 4
+              ? entry.thresholds
+              : [0, 0, 0, 0];
+            const policyName = policyMap?.[entry.boundary_id];
+            const scoringMode = typeof entry.scoring_mode === 'string' ? entry.scoring_mode.trim() : '';
             return (
               <tr key={i}>
-                <td style={styles.td}>{entry.boundary_name || entry.boundary_id || '—'}</td>
+                <td style={styles.td}>
+                  {policyName && (
+                    <div>{policyName}</div>
+                  )}
+                  {entry.boundary_name && (
+                    <div style={{ color: '#999', fontSize: 11, marginTop: policyName ? 2 : 0 }}>
+                      {entry.boundary_name}
+                    </div>
+                  )}
+                  {!policyName && !entry.boundary_name && (entry.boundary_id || '—')}
+                </td>
                 <td style={styles.td}>{entry.effect ?? '—'}</td>
                 <td style={styles.td}>{entry.decision === 1 ? 'matched' : 'no match'}</td>
                 <td style={styles.td}>{entry.triggering_slice ?? '—'}</td>
-                <td style={styles.td}>{simsFormatted}</td>
+                <td style={styles.td}>
+                  {scoringMode ? (
+                    <span style={{
+                      display: 'inline-block',
+                      fontSize: 10,
+                      fontFamily: 'monospace',
+                      fontWeight: 600,
+                      padding: '2px 6px',
+                      borderRadius: 3,
+                      background: '#f0f0f0',
+                      color: '#555',
+                      whiteSpace: 'nowrap',
+                      letterSpacing: 0.2,
+                    }}>
+                      {scoringMode}
+                    </span>
+                  ) : '—'}
+                </td>
+                <td style={{ ...styles.td, minWidth: 160 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    {SLICE_LABELS.map((label, idx) => {
+                      const sim = sims[idx] != null ? sims[idx] : null;
+                      const thr = thresholds[idx] ?? 0;
+                      const pass = sim !== null && thr > 0 && sim >= thr;
+                      const fail = sim !== null && thr > 0 && sim < thr;
+                      return (
+                        <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+                          <span style={{ fontSize: 10, color: '#999', width: 52, flexShrink: 0 }}>{label}</span>
+                          <span style={{ fontSize: 11, fontFamily: 'monospace', color: '#1a1a1a' }}>
+                            {sim !== null ? sim.toFixed(2) : '—'}
+                            {thr > 0 && <span style={{ color: '#bbb' }}> / {thr.toFixed(2)}</span>}
+                          </span>
+                          {pass && <span style={{ fontSize: 10, color: '#2e7d32', fontWeight: 700 }}>✓</span>}
+                          {fail && <span style={{ fontSize: 10, color: '#c62828', fontWeight: 700 }}>✗</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </td>
               </tr>
             );
           })}
@@ -191,7 +265,7 @@ function EvidenceTable({ evidence }) {
   );
 }
 
-export default function EnforcementResultPanel({ result }) {
+export default function EnforcementResultPanel({ result, policies }) {
   if (!result) return null;
 
   const {
@@ -202,6 +276,10 @@ export default function EnforcementResultPanel({ result }) {
     evidence,
     modified_params,
   } = result;
+
+  const policyMap = Array.isArray(policies)
+    ? Object.fromEntries(policies.map((p) => [p.id, p.name]))
+    : {};
 
   return (
     <div style={styles.panel}>
@@ -222,11 +300,11 @@ export default function EnforcementResultPanel({ result }) {
         </div>
       </div>
 
-      <div style={styles.sectionTitle}>Slice Similarities</div>
+      <div style={styles.sectionTitle}>Slice Similarities (aggregate)</div>
       <SliceBars similarities={slice_similarities} />
 
-      <div style={styles.sectionTitle}>Evidence</div>
-      <EvidenceTable evidence={evidence} />
+      <div style={styles.sectionTitle}>Evidence (per policy)</div>
+      <EvidenceTable evidence={evidence} policyMap={policyMap} />
 
       {modified_params != null && (
         <>

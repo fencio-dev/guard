@@ -141,6 +141,32 @@ const styles = {
     marginTop: '3px',
     lineHeight: '1.4',
   },
+  labelRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+  },
+  modeToggle: {
+    fontSize: 11,
+    color: '#888',
+    cursor: 'pointer',
+    userSelect: 'none',
+    marginLeft: 'auto',
+  },
+  modeToggleActive: {
+    fontWeight: 700,
+    color: '#1a1a1a',
+  },
+  inputInvalid: {
+    fontSize: 13,
+    padding: '6px 10px',
+    border: '1px solid #c0392b',
+    borderRadius: 4,
+    fontFamily: 'inherit',
+    background: '#fff',
+    resize: 'vertical',
+    minHeight: 72,
+  },
 };
 
 export default function PolicyForm({ onSuccess, onCancel, policy = null }) {
@@ -176,6 +202,9 @@ export default function PolicyForm({ onSuccess, onCancel, policy = null }) {
   );
   const [notes, setNotes] = useState(isEdit ? (policy.notes ?? '') : '');
 
+  const [jsonMode, setJsonMode] = useState({ op: false, t: false, p: false, ctx: false });
+  const [jsonErrors, setJsonErrors] = useState({ op: null, t: null, p: null, ctx: null });
+
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
@@ -186,6 +215,23 @@ export default function PolicyForm({ onSuccess, onCancel, policy = null }) {
 
   function setWeight(key, value) {
     setWeights((prev) => ({ ...prev, [key]: parseFloat(value) }));
+  }
+
+  function toggleJsonMode(field) {
+    setJsonMode((prev) => ({ ...prev, [field]: !prev[field] }));
+    setJsonErrors((prev) => ({ ...prev, [field]: null }));
+  }
+
+  function handleAnchorChange(field, value, setter) {
+    setter(value);
+    if (jsonMode[field]) {
+      try {
+        JSON.parse(value);
+        setJsonErrors((prev) => ({ ...prev, [field]: null }));
+      } catch {
+        setJsonErrors((prev) => ({ ...prev, [field]: 'Invalid JSON' }));
+      }
+    }
   }
 
   function validate() {
@@ -227,6 +273,7 @@ export default function PolicyForm({ onSuccess, onCancel, policy = null }) {
           priority,
           match,
           thresholds: { ...thresholds },
+          scoring_mode: scoringMode,
           weights: scoringMode === 'weighted-avg' ? { ...weights } : null,
           drift_threshold: driftThreshold !== '' ? parseFloat(driftThreshold) : null,
           notes: notes.trim() || null,
@@ -242,6 +289,7 @@ export default function PolicyForm({ onSuccess, onCancel, policy = null }) {
           priority,
           match,
           thresholds: { ...thresholds },
+          scoring_mode: scoringMode,
           weights: scoringMode === 'weighted-avg' ? { ...weights } : null,
           drift_threshold: driftThreshold !== '' ? parseFloat(driftThreshold) : null,
           notes: notes.trim() || null,
@@ -333,49 +381,141 @@ export default function PolicyForm({ onSuccess, onCancel, policy = null }) {
           <small style={{ ...styles.hint, marginBottom: 12 }}>Natural language descriptions of the action pattern this policy should match. The engine embeds these as semantic vectors and compares them against incoming intent events.</small>
           <div style={styles.gridFull}>
             <div style={styles.field}>
-              <label style={styles.label}>Operation (NL)</label>
-              <input
-                style={styles.input}
-                type="text"
-                value={matchOp}
-                onChange={(e) => setMatchOp(e.target.value)}
-                placeholder="e.g. read user records from database"
-              />
+              <div style={styles.labelRow}>
+                <label style={styles.label}>Operation</label>
+                <span style={styles.modeToggle}>
+                  <span
+                    style={!jsonMode.op ? styles.modeToggleActive : {}}
+                    onClick={() => jsonMode.op && toggleJsonMode('op')}
+                  >NL</span>
+                  {' | '}
+                  <span
+                    style={jsonMode.op ? styles.modeToggleActive : {}}
+                    onClick={() => !jsonMode.op && toggleJsonMode('op')}
+                  >JSON</span>
+                </span>
+              </div>
+              {jsonMode.op ? (
+                <textarea
+                  style={jsonErrors.op ? styles.inputInvalid : { ...styles.textarea }}
+                  value={matchOp}
+                  onChange={(e) => handleAnchorChange('op', e.target.value, setMatchOp)}
+                  placeholder='e.g. {"action": "read", "scope": "users"}'
+                />
+              ) : (
+                <input
+                  style={styles.input}
+                  type="text"
+                  value={matchOp}
+                  onChange={(e) => setMatchOp(e.target.value)}
+                  placeholder="e.g. read user records from database"
+                />
+              )}
               {fieldErrors.matchOp && <span style={styles.inlineError}>{fieldErrors.matchOp}</span>}
+              {jsonErrors.op && <span style={styles.inlineError}>{jsonErrors.op}</span>}
               <small style={styles.hint}>Describe the action being performed. E.g. 'query a database', 'send an email', 'read a file'.</small>
             </div>
             <div style={styles.field}>
-              <label style={styles.label}>Target / Tool (NL)</label>
-              <input
-                style={styles.input}
-                type="text"
-                value={matchT}
-                onChange={(e) => setMatchT(e.target.value)}
-                placeholder="e.g. postgres users table"
-              />
+              <div style={styles.labelRow}>
+                <label style={styles.label}>Target / Tool</label>
+                <span style={styles.modeToggle}>
+                  <span
+                    style={!jsonMode.t ? styles.modeToggleActive : {}}
+                    onClick={() => jsonMode.t && toggleJsonMode('t')}
+                  >NL</span>
+                  {' | '}
+                  <span
+                    style={jsonMode.t ? styles.modeToggleActive : {}}
+                    onClick={() => !jsonMode.t && toggleJsonMode('t')}
+                  >JSON</span>
+                </span>
+              </div>
+              {jsonMode.t ? (
+                <textarea
+                  style={jsonErrors.t ? styles.inputInvalid : { ...styles.textarea }}
+                  value={matchT}
+                  onChange={(e) => handleAnchorChange('t', e.target.value, setMatchT)}
+                  placeholder='e.g. {"tool": "postgres", "table": "users"}'
+                />
+              ) : (
+                <input
+                  style={styles.input}
+                  type="text"
+                  value={matchT}
+                  onChange={(e) => setMatchT(e.target.value)}
+                  placeholder="e.g. postgres users table"
+                />
+              )}
               {fieldErrors.matchT && <span style={styles.inlineError}>{fieldErrors.matchT}</span>}
+              {jsonErrors.t && <span style={styles.inlineError}>{jsonErrors.t}</span>}
               <small style={styles.hint}>Describe the resource or tool being accessed. E.g. 'postgres users table', 'Gmail API', 'S3 bucket'.</small>
             </div>
             <div style={styles.field}>
-              <label style={styles.label}>Parameters (NL) — optional</label>
-              <input
-                style={styles.input}
-                type="text"
-                value={matchP}
-                onChange={(e) => setMatchP(e.target.value)}
-                placeholder="e.g. query includes email and name columns"
-              />
+              <div style={styles.labelRow}>
+                <label style={styles.label}>Parameters — optional</label>
+                <span style={styles.modeToggle}>
+                  <span
+                    style={!jsonMode.p ? styles.modeToggleActive : {}}
+                    onClick={() => jsonMode.p && toggleJsonMode('p')}
+                  >NL</span>
+                  {' | '}
+                  <span
+                    style={jsonMode.p ? styles.modeToggleActive : {}}
+                    onClick={() => !jsonMode.p && toggleJsonMode('p')}
+                  >JSON</span>
+                </span>
+              </div>
+              {jsonMode.p ? (
+                <textarea
+                  style={jsonErrors.p ? styles.inputInvalid : { ...styles.textarea }}
+                  value={matchP}
+                  onChange={(e) => handleAnchorChange('p', e.target.value, setMatchP)}
+                  placeholder='e.g. {"columns": ["email", "name"]}'
+                />
+              ) : (
+                <input
+                  style={styles.input}
+                  type="text"
+                  value={matchP}
+                  onChange={(e) => setMatchP(e.target.value)}
+                  placeholder="e.g. query includes email and name columns"
+                />
+              )}
+              {jsonErrors.p && <span style={styles.inlineError}>{jsonErrors.p}</span>}
               <small style={styles.hint}>Optional. Describe the parameter pattern to match. E.g. 'queries containing personal identifiers'. Leave blank to match any parameters.</small>
             </div>
             <div style={styles.field}>
-              <label style={styles.label}>Risk Context (NL) — optional</label>
-              <input
-                style={styles.input}
-                type="text"
-                value={matchCtx}
-                onChange={(e) => setMatchCtx(e.target.value)}
-                placeholder="e.g. accessed PII in the last 5 minutes"
-              />
+              <div style={styles.labelRow}>
+                <label style={styles.label}>Risk Context — optional</label>
+                <span style={styles.modeToggle}>
+                  <span
+                    style={!jsonMode.ctx ? styles.modeToggleActive : {}}
+                    onClick={() => jsonMode.ctx && toggleJsonMode('ctx')}
+                  >NL</span>
+                  {' | '}
+                  <span
+                    style={jsonMode.ctx ? styles.modeToggleActive : {}}
+                    onClick={() => !jsonMode.ctx && toggleJsonMode('ctx')}
+                  >JSON</span>
+                </span>
+              </div>
+              {jsonMode.ctx ? (
+                <textarea
+                  style={jsonErrors.ctx ? styles.inputInvalid : { ...styles.textarea }}
+                  value={matchCtx}
+                  onChange={(e) => handleAnchorChange('ctx', e.target.value, setMatchCtx)}
+                  placeholder='e.g. {"signal": "pii_access", "window_minutes": 5}'
+                />
+              ) : (
+                <input
+                  style={styles.input}
+                  type="text"
+                  value={matchCtx}
+                  onChange={(e) => setMatchCtx(e.target.value)}
+                  placeholder="e.g. accessed PII in the last 5 minutes"
+                />
+              )}
+              {jsonErrors.ctx && <span style={styles.inlineError}>{jsonErrors.ctx}</span>}
               <small style={styles.hint}>Optional. Describe the session context signal this policy reacts to. E.g. 'requests involving financial data'. Leave blank to ignore context.</small>
             </div>
           </div>

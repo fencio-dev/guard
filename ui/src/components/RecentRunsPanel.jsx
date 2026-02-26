@@ -1,4 +1,4 @@
-import { Pin, PinOff } from 'lucide-react';
+import { Pin, PinOff, Trash2 } from 'lucide-react';
 
 const BADGE_COLORS = {
   ALLOW:   { background: '#d4edda', color: '#155724' },
@@ -92,7 +92,7 @@ function truncate(str, max) {
   return str.length > max ? str.slice(0, max) + '…' : str;
 }
 
-export default function RecentRunsPanel({ runs, pinnedIndex, onSelect, onPin }) {
+export default function RecentRunsPanel({ runs, pinnedIndex, onSelect, onPin, onClear }) {
   if (!runs || runs.length === 0) return null;
 
   // Build display list: pinned entry first (if any), then the rest in order.
@@ -110,7 +110,19 @@ export default function RecentRunsPanel({ runs, pinnedIndex, onSelect, onPin }) 
 
   return (
     <div style={styles.section}>
-      <div style={styles.title}>Recent Runs</div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <div style={{ ...styles.title, marginBottom: 0 }}>Recent Runs</div>
+        {onClear && (
+          <button
+            style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, color: '#999', fontSize: 12, padding: '2px 4px' }}
+            title="Clear recent runs"
+            onClick={onClear}
+          >
+            <Trash2 size={13} />
+            Clear
+          </button>
+        )}
+      </div>
       <div>
         {displayList.map((item) => {
           const badgeColors = BADGE_COLORS[item.decision] ?? BADGE_COLORS.DEFER;

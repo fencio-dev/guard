@@ -40,15 +40,18 @@ class PolicyConverter:
         for key, value in PolicyConverter._build_params(boundary).items():
             rule_instance.params[key].CopyFrom(value)
 
-        if boundary.weights is not None:
+        if boundary.scoring_mode == "weighted-avg":
+            weights = boundary.weights
+            if weights is None:
+                raise ValueError("weights are required when scoring_mode is 'weighted-avg'")
             rule_instance.slice_weights.extend([
-                boundary.weights.action,
-                boundary.weights.resource,
-                boundary.weights.data,
-                boundary.weights.risk,
+                weights.action,
+                weights.resource,
+                weights.data,
+                weights.risk,
             ])
         else:
-            rule_instance.slice_weights.extend([0.25, 0.25, 0.25, 0.25])
+            rule_instance.slice_weights.extend([1.0, 1.0, 1.0, 1.0])
 
         rule_instance.policy_type = boundary.policy_type
         rule_instance.drift_threshold = boundary.drift_threshold if boundary.drift_threshold is not None else 0.0
@@ -65,6 +68,7 @@ class PolicyConverter:
         params["boundary_name"] = PolicyConverter._string_param(boundary.name)
         params["boundary_status"] = PolicyConverter._string_param(boundary.status)
         params["policy_type"] = PolicyConverter._string_param(boundary.policy_type)
+        params["rule_decision"] = PolicyConverter._string_param(boundary.scoring_mode)
         params["priority"] = PolicyConverter._float_param(float(boundary.priority))
         params["thresholds"] = PolicyConverter._json_param(
             boundary.thresholds.model_dump()

@@ -151,6 +151,51 @@ def write_call(agent_id: str, request_id: str, action: str, decision: str) -> No
         )
 
 
+def update_call_decision(agent_id: str, request_id: str, decision: str) -> None:
+    """
+    Update the decision field of the action_history entry matching request_id.
+
+    Finds the entry in action_history for agent_id that matches request_id
+    and updates its decision field in-place. Never appends a new entry.
+    Fail-soft: logs on any error, does not raise.
+    """
+    if not agent_id:
+        return
+    try:
+        conn = _get_connection()
+        try:
+            row = conn.execute(
+                "SELECT action_history FROM agent_sessions WHERE agent_id = ?",
+                (agent_id,),
+            ).fetchone()
+
+            if row is None:
+                return
+
+            history = json.loads(row["action_history"])
+            for entry in history:
+                if entry.get("request_id") == request_id:
+                    entry["decision"] = decision
+                    break
+
+            conn.execute(
+                "UPDATE agent_sessions SET action_history = ? WHERE agent_id = ?",
+                (json.dumps(history), agent_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    except Exception as exc:
+        logger.error(
+            "session_store: update_call_decision failed for agent_id=%s request_id=%s: %s",
+            agent_id,
+            request_id,
+            exc,
+            exc_info=True,
+        )
+
+
 def get_session(agent_id: str) -> dict | None:
     """
     Return the full session row for agent_id as a dict, or None if not found.

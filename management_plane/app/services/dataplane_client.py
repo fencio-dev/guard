@@ -230,6 +230,8 @@ class DataPlaneClient:
                 similarities=list(ev.similarities),
                 triggering_slice=ev.triggering_slice,
                 anchor_matched=ev.anchor_matched,
+                thresholds=list(ev.thresholds) if ev.thresholds else [0.0, 0.0, 0.0, 0.0],
+                scoring_mode=ev.scoring_mode,
             )
             for ev in response.evidence
         ]
