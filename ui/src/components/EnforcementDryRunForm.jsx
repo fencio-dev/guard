@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { runEnforce } from '../api/enforce';
+import { fetchPolicies } from '../api/policies';
 import EnforcementResultPanel from './EnforcementResultPanel';
-
-const SENSITIVITY_OPTIONS = ['public', 'internal', 'secret'];
+import RecentRunsPanel from './RecentRunsPanel';
+import SuggestedIntentsPanel from './SuggestedIntentsPanel';
 
 const styles = {
   panel: {
@@ -61,23 +62,15 @@ const styles = {
     fontFamily: 'inherit',
     background: '#fff',
   },
-  multiSelect: {
+  textarea: {
     fontSize: 13,
-    padding: '4px',
+    padding: '6px 10px',
     border: '1px solid #ccc',
     borderRadius: 4,
-    fontFamily: 'inherit',
+    fontFamily: 'monospace',
     background: '#fff',
     minHeight: 80,
-  },
-  checkboxLabel: {
-    fontSize: 13,
-    color: '#333',
-    display: 'flex',
-    alignItems: 'center',
-    gap: 5,
-    cursor: 'pointer',
-    marginTop: 4,
+    resize: 'vertical',
   },
   footer: {
     display: 'flex',
@@ -125,36 +118,255 @@ const styles = {
     color: '#c0392b',
     marginTop: 2,
   },
+  hint: {
+    display: 'block',
+    fontSize: '11px',
+    color: '#888',
+    marginTop: '3px',
+    lineHeight: '1.4',
+  },
+  labelRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+  },
+  modeToggle: {
+    fontSize: 11,
+    color: '#888',
+    cursor: 'pointer',
+    userSelect: 'none',
+    marginLeft: 'auto',
+  },
+  modeToggleActive: {
+    fontWeight: 700,
+    color: '#1a1a1a',
+  },
+  inputInvalid: {
+    fontSize: 13,
+    padding: '6px 10px',
+    border: '1px solid #c0392b',
+    borderRadius: 4,
+    fontFamily: 'inherit',
+    background: '#fff',
+    resize: 'vertical',
+    minHeight: 72,
+  },
 };
 
+const DEFAULT_STATE = {
+  eventType: 'tool_call',
+  agentId: '',
+  principalId: '',
+  actorType: 'agent',
+  serviceAccount: '',
+  roleScope: '',
+  op: '',
+  t: '',
+  p: '',
+  paramsRaw: '',
+  ctxInitialRequest: '',
+  ctxDataClassifications: '',
+  ctxCumulativeDrift: '',
+};
+
+const DRY_RUN_HISTORY_STORAGE_KEY = 'guard:ui:enforcement:dry-run-history';
+const DRY_RUN_HISTORY_STORAGE_VERSION = 2;
+const MAX_DRY_RUN_HISTORY = 10;
+
+const FORM_SNAPSHOT_KEYS = Object.keys(DEFAULT_STATE);
+
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function sanitizeFormSnapshot(value) {
+  if (!isPlainObject(value)) {
+    return { ...DEFAULT_STATE };
+  }
+
+  const hasExactShape =
+    FORM_SNAPSHOT_KEYS.every((key) => typeof value[key] === 'string')
+    && Object.keys(value).every((key) => FORM_SNAPSHOT_KEYS.includes(key));
+
+  if (!hasExactShape) {
+    return { ...DEFAULT_STATE };
+  }
+
+  return {
+    eventType: value.eventType,
+    agentId: value.agentId,
+    principalId: value.principalId,
+    actorType: value.actorType,
+    serviceAccount: value.serviceAccount,
+    roleScope: value.roleScope,
+    op: value.op,
+    t: value.t,
+    p: value.p,
+    paramsRaw: value.paramsRaw,
+    ctxInitialRequest: value.ctxInitialRequest,
+    ctxDataClassifications: value.ctxDataClassifications,
+    ctxCumulativeDrift: value.ctxCumulativeDrift,
+  };
+}
+
+function sanitizeResult(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) return null;
+  if (typeof value.decision !== 'string') return null;
+  if (!Array.isArray(value.slice_similarities) || value.slice_similarities.length !== 4) return null;
+  return value;
+}
+
+function sanitizeRunEntry(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (typeof value.decision !== 'string') return null;
+  if (typeof value.ts !== 'number' || !Number.isFinite(value.ts)) return null;
+
+  return {
+    formSnapshot: sanitizeFormSnapshot(value.formSnapshot),
+    decision: value.decision,
+    ts: value.ts,
+    result: sanitizeResult(value.result),
+  };
+}
+
+function normalizeRunsWithPinnedIndex(runsInput, pinnedIndexInput) {
+  const runs = Array.isArray(runsInput) ? [...runsInput] : [];
+  let pinnedIndex =
+    Number.isInteger(pinnedIndexInput) && pinnedIndexInput >= 0 && pinnedIndexInput < runs.length
+      ? pinnedIndexInput
+      : null;
+
+  while (runs.length > MAX_DRY_RUN_HISTORY) {
+    let dropIndex = runs.length - 1;
+    while (dropIndex >= 0 && dropIndex === pinnedIndex) {
+      dropIndex--;
+    }
+
+    if (dropIndex < 0) break;
+
+    runs.splice(dropIndex, 1);
+    if (pinnedIndex !== null && pinnedIndex > dropIndex) {
+      pinnedIndex--;
+    }
+  }
+
+  return { runs, pinnedIndex };
+}
+
+function loadDryRunHistoryFromSessionStorage() {
+  const fallback = { runs: [], pinnedIndex: null };
+
+  try {
+    if (typeof window === 'undefined' || !window.sessionStorage) return fallback;
+
+    const raw = window.sessionStorage.getItem(DRY_RUN_HISTORY_STORAGE_KEY);
+    if (!raw) return fallback;
+
+    const parsed = JSON.parse(raw);
+    if (!isPlainObject(parsed)) return fallback;
+    if (parsed.version !== 2) return fallback;
+    if (!Array.isArray(parsed.runs)) return fallback;
+    if (!(parsed.pinnedIndex === null || Number.isInteger(parsed.pinnedIndex))) return fallback;
+
+    const runs = parsed.runs.map(sanitizeRunEntry).filter(Boolean);
+
+    const pinnedIndex =
+      typeof parsed.pinnedIndex === 'number' &&
+      Number.isInteger(parsed.pinnedIndex) &&
+      parsed.pinnedIndex >= 0 &&
+      parsed.pinnedIndex < runs.length
+        ? parsed.pinnedIndex
+        : null;
+
+    return normalizeRunsWithPinnedIndex(runs, pinnedIndex);
+  } catch {
+    return fallback;
+  }
+}
+
+function persistDryRunHistoryToSessionStorage(runs, pinnedIndex) {
+  try {
+    if (typeof window === 'undefined' || !window.sessionStorage) return;
+
+    const sanitizedRuns = Array.isArray(runs) ? runs.map(sanitizeRunEntry).filter(Boolean) : [];
+    const sanitizedPinnedIndex =
+      Number.isInteger(pinnedIndex) && pinnedIndex >= 0 && pinnedIndex < sanitizedRuns.length
+        ? pinnedIndex
+        : null;
+
+    const normalized = normalizeRunsWithPinnedIndex(sanitizedRuns, sanitizedPinnedIndex);
+
+    const payload = {
+      version: DRY_RUN_HISTORY_STORAGE_VERSION,
+      runs: normalized.runs,
+      pinnedIndex: normalized.pinnedIndex,
+    };
+
+    window.sessionStorage.setItem(DRY_RUN_HISTORY_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // Fail soft when storage is unavailable.
+  }
+}
+
 export default function EnforcementDryRunForm() {
-  const [tenantId, setTenantId] = useState('');
-  const [actorId, setActorId] = useState('');
-  const [actorType, setActorType] = useState('user');
-  const [action, setAction] = useState('');
-  const [resourceType, setResourceType] = useState('');
-  const [resourceName, setResourceName] = useState('');
-  const [resourceLocation, setResourceLocation] = useState('');
-  const [sensitivity, setSensitivity] = useState(['internal']);
-  const [pii, setPii] = useState(false);
-  const [volume, setVolume] = useState('');
-  const [authn, setAuthn] = useState('required');
+  const [formState, setFormState] = useState(DEFAULT_STATE);
+
+  const [hydratedHistory] = useState(() => loadDryRunHistoryFromSessionStorage());
+
+  const [jsonMode, setJsonMode] = useState({ op: false, t: false, p: false });
+  const [jsonErrors, setJsonErrors] = useState({ op: null, t: null, p: null });
 
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
   const [submitError, setSubmitError] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
+  const [runs, setRuns] = useState(() => hydratedHistory.runs);
+  const [pinnedIndex, setPinnedIndex] = useState(() => hydratedHistory.pinnedIndex);
+  const [policies, setPolicies] = useState([]);
 
-  function getMultiSelectValues(e) {
-    return Array.from(e.target.selectedOptions).map((o) => o.value);
+  useEffect(() => {
+    persistDryRunHistoryToSessionStorage(runs, pinnedIndex);
+  }, [runs, pinnedIndex]);
+
+  useEffect(() => {
+    fetchPolicies().then(setPolicies).catch(() => {});
+  }, []);
+
+  function setField(key, value) {
+    setFormState(s => ({ ...s, [key]: value }));
+  }
+
+  function toggleJsonMode(field) {
+    setJsonMode((prev) => ({ ...prev, [field]: !prev[field] }));
+    setJsonErrors((prev) => ({ ...prev, [field]: null }));
+  }
+
+  function handleAnchorChange(field, value) {
+    setField(field, value);
+    if (jsonMode[field]) {
+      try {
+        JSON.parse(value);
+        setJsonErrors((prev) => ({ ...prev, [field]: null }));
+      } catch {
+        setJsonErrors((prev) => ({ ...prev, [field]: 'Invalid JSON' }));
+      }
+    }
   }
 
   function validate() {
     const errors = {};
-    if (!tenantId.trim()) errors.tenantId = 'Tenant ID is required.';
-    if (!actorId.trim()) errors.actorId = 'Actor ID is required.';
-    if (!action.trim()) errors.action = 'Action is required.';
-    if (!resourceType.trim()) errors.resourceType = 'Resource Type is required.';
+    if (!formState.agentId.trim()) errors.agentId = 'Agent ID is required.';
+    if (!formState.principalId.trim()) errors.principalId = 'Principal ID is required.';
+    if (!formState.op.trim()) errors.op = 'Operation is required.';
+    if (!formState.t.trim()) errors.t = 'Target / Tool is required.';
+    if (formState.paramsRaw.trim()) {
+      try {
+        JSON.parse(formState.paramsRaw);
+      } catch {
+        errors.paramsRaw = 'Invalid JSON.';
+      }
+    }
     return errors;
   }
 
@@ -169,38 +381,71 @@ export default function EnforcementDryRunForm() {
     }
     setFieldErrors({});
 
-    const payload = {
-      id: crypto.randomUUID(),
-      schemaVersion: 'v1.3',
-      tenantId: tenantId.trim(),
-      timestamp: Date.now() / 1000,
-      actor: {
-        id: actorId.trim(),
-        type: actorType,
-      },
-      action: action.trim(),
-      resource: {
-        type: resourceType.trim(),
-        name: resourceName.trim() || undefined,
-        location: resourceLocation.trim() || undefined,
-      },
-      data: {
-        sensitivity: sensitivity,
-        pii: pii,
-        volume: volume || null,
-      },
-      risk: {
-        authn: authn,
-      },
-      layer: null,
-      tool_name: null,
-      tool_method: null,
+    const identity = {
+      agent_id: formState.agentId.trim(),
+      principal_id: formState.principalId.trim(),
+      actor_type: formState.actorType,
     };
+    if (formState.serviceAccount.trim()) identity.service_account = formState.serviceAccount.trim();
+    if (formState.roleScope.trim()) identity.role_scope = formState.roleScope.trim();
+
+    let params = null;
+    if (formState.paramsRaw.trim()) {
+      params = JSON.parse(formState.paramsRaw);
+    }
+
+    let ctx = null;
+    const classifications = formState.ctxDataClassifications.trim()
+      ? formState.ctxDataClassifications.split(',').map((s) => s.trim()).filter(Boolean)
+      : [];
+    const driftVal = formState.ctxCumulativeDrift !== '' ? parseFloat(formState.ctxCumulativeDrift) : null;
+    const hasCtx =
+      formState.ctxInitialRequest.trim() || classifications.length > 0 || driftVal !== null;
+
+    if (hasCtx) {
+      ctx = {};
+      if (formState.ctxInitialRequest.trim()) ctx.initial_request = formState.ctxInitialRequest.trim();
+      if (classifications.length > 0) ctx.data_classifications = classifications;
+      if (driftVal !== null) ctx.cumulative_drift = driftVal;
+    }
+
+    const payload = {
+      event_type: formState.eventType,
+      id: crypto.randomUUID(),
+      ts: Date.now() / 1000,
+      identity,
+      op: formState.op.trim(),
+      t: formState.t.trim(),
+      params,
+      ctx,
+    };
+    if (formState.p.trim()) payload.p = formState.p.trim();
 
     setRunning(true);
     try {
       const data = await runEnforce(payload);
       setResult(data);
+
+      const entry = { formSnapshot: { ...formState }, decision: data.decision, ts: Date.now(), result: data };
+      const next = [entry, ...runs];
+
+      let newPinnedIndex = pinnedIndex !== null ? pinnedIndex + 1 : null;
+
+      if (next.length > 10) {
+        let dropIndex = next.length - 1;
+        while (dropIndex >= 0 && dropIndex === newPinnedIndex) {
+          dropIndex--;
+        }
+        if (dropIndex >= 0) {
+          next.splice(dropIndex, 1);
+          if (newPinnedIndex !== null && newPinnedIndex > dropIndex) {
+            newPinnedIndex--;
+          }
+        }
+      }
+
+      setRuns(next);
+      setPinnedIndex(newPinnedIndex);
     } catch (err) {
       setSubmitError(err.message);
     } finally {
@@ -208,156 +453,267 @@ export default function EnforcementDryRunForm() {
     }
   }
 
+  function handlePinRun(index) {
+    setPinnedIndex(prev => (prev === index ? null : index));
+  }
+
+  function handleSelectRun(item) {
+    setFormState(sanitizeFormSnapshot(item.formSnapshot));
+    setResult(item.result ?? null);
+    setSubmitError(null);
+    setFieldErrors({});
+  }
+
   function handleClear() {
     setResult(null);
     setSubmitError(null);
     setFieldErrors({});
+    setFormState(DEFAULT_STATE);
   }
 
   return (
     <div style={styles.panel}>
       <div style={styles.panelTitle}>Enforcement Dry Run</div>
+      <div style={{ display: 'flex', gap: 28, alignItems: 'flex-start' }}>
+      <div style={{ flex: '1 1 0', minWidth: 0 }}>
       <form onSubmit={handleSubmit} noValidate>
 
         <fieldset style={styles.fieldset}>
-          <legend style={styles.legend}>Intent</legend>
+          <legend style={styles.legend}>Identity</legend>
           <div style={styles.grid}>
             <div style={styles.field}>
-              <label style={styles.label}>Tenant ID</label>
-              <input
-                style={styles.input}
-                type="text"
-                value={tenantId}
-                onChange={(e) => setTenantId(e.target.value)}
-                placeholder="tenant-id"
-              />
-              {fieldErrors.tenantId && <span style={styles.inlineError}>{fieldErrors.tenantId}</span>}
+              <label style={styles.label}>Event Type *</label>
+              <select style={styles.select} value={formState.eventType} onChange={(e) => setField('eventType', e.target.value)}>
+                <option value="tool_call">tool_call</option>
+                <option value="reasoning">reasoning</option>
+              </select>
+              <small style={styles.hint}>'tool_call' — an agent invoking a tool or API. 'reasoning' — an internal reasoning step being evaluated.</small>
             </div>
             <div style={styles.field}>
-              <label style={styles.label}>Actor ID</label>
-              <input
-                style={styles.input}
-                type="text"
-                value={actorId}
-                onChange={(e) => setActorId(e.target.value)}
-                placeholder="actor-id"
-              />
-              {fieldErrors.actorId && <span style={styles.inlineError}>{fieldErrors.actorId}</span>}
-            </div>
-            <div style={styles.field}>
-              <label style={styles.label}>Actor Type</label>
-              <select style={styles.select} value={actorType} onChange={(e) => setActorType(e.target.value)}>
+              <label style={styles.label}>Actor Type *</label>
+              <select style={styles.select} value={formState.actorType} onChange={(e) => setField('actorType', e.target.value)}>
                 <option value="user">user</option>
                 <option value="service">service</option>
                 <option value="llm">llm</option>
                 <option value="agent">agent</option>
               </select>
+              <small style={styles.hint}>The type of entity making this request. 'user' = human; 'llm' = model acting autonomously; 'agent' = orchestrated agent; 'service' = background service.</small>
             </div>
             <div style={styles.field}>
-              <label style={styles.label}>Action</label>
+              <label style={styles.label}>Agent ID *</label>
               <input
                 style={styles.input}
                 type="text"
-                list="action-options"
-                value={action}
-                onChange={(e) => setAction(e.target.value)}
-                placeholder="e.g. read"
+                value={formState.agentId}
+                onChange={(e) => setField('agentId', e.target.value)}
+                placeholder="agent-id"
               />
-              <datalist id="action-options">
-                <option value="read" />
-                <option value="write" />
-                <option value="update" />
-                <option value="delete" />
-                <option value="execute" />
-                <option value="export" />
-              </datalist>
-              {fieldErrors.action && <span style={styles.inlineError}>{fieldErrors.action}</span>}
+              {fieldErrors.agentId && <span style={styles.inlineError}>{fieldErrors.agentId}</span>}
+              <small style={styles.hint}>Identifier for the agent instance. Used to track session context and cumulative drift across multiple calls.</small>
             </div>
             <div style={styles.field}>
-              <label style={styles.label}>Resource Type</label>
+              <label style={styles.label}>Principal ID *</label>
               <input
                 style={styles.input}
                 type="text"
-                list="resource-type-options"
-                value={resourceType}
-                onChange={(e) => setResourceType(e.target.value)}
-                placeholder="e.g. database"
+                value={formState.principalId}
+                onChange={(e) => setField('principalId', e.target.value)}
+                placeholder="principal-id"
               />
-              <datalist id="resource-type-options">
-                <option value="database" />
-                <option value="storage" />
-                <option value="api" />
-                <option value="queue" />
-                <option value="cache" />
-              </datalist>
-              {fieldErrors.resourceType && <span style={styles.inlineError}>{fieldErrors.resourceType}</span>}
+              {fieldErrors.principalId && <span style={styles.inlineError}>{fieldErrors.principalId}</span>}
+              <small style={styles.hint}>The human or service principal on whose behalf the agent is acting.</small>
             </div>
             <div style={styles.field}>
-              <label style={styles.label}>Resource Name</label>
+              <label style={styles.label}>Service Account</label>
               <input
                 style={styles.input}
                 type="text"
-                value={resourceName}
-                onChange={(e) => setResourceName(e.target.value)}
+                value={formState.serviceAccount}
+                onChange={(e) => setField('serviceAccount', e.target.value)}
                 placeholder="optional"
               />
+              <small style={styles.hint}>Optional. The service account used by this agent, if applicable.</small>
             </div>
             <div style={styles.field}>
-              <label style={styles.label}>Resource Location</label>
+              <label style={styles.label}>Role Scope</label>
               <input
                 style={styles.input}
                 type="text"
-                value={resourceLocation}
-                onChange={(e) => setResourceLocation(e.target.value)}
+                value={formState.roleScope}
+                onChange={(e) => setField('roleScope', e.target.value)}
                 placeholder="optional"
               />
+              <small style={styles.hint}>Optional. The privilege scope or role active for this request. E.g. 'read-only', 'admin', 'data-analyst'.</small>
             </div>
           </div>
         </fieldset>
 
         <fieldset style={styles.fieldset}>
-          <legend style={styles.legend}>Data & Risk</legend>
+          <legend style={styles.legend}>Intent</legend>
+          <small style={{ ...styles.hint, marginBottom: 12 }}>These fields describe the action a = (op, t, p). They are embedded as semantic vectors and compared against policy match anchors.</small>
           <div style={styles.grid}>
             <div style={styles.field}>
-              <label style={styles.label}>Data Sensitivity</label>
-              <select
-                style={styles.multiSelect}
-                multiple
-                value={sensitivity}
-                onChange={(e) => setSensitivity(getMultiSelectValues(e))}
-              >
-                {SENSITIVITY_OPTIONS.map((s) => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
+              <div style={styles.labelRow}>
+                <label style={styles.label}>Operation *</label>
+                <span style={styles.modeToggle}>
+                  <span
+                    style={!jsonMode.op ? styles.modeToggleActive : {}}
+                    onClick={() => jsonMode.op && toggleJsonMode('op')}
+                  >NL</span>
+                  {' | '}
+                  <span
+                    style={jsonMode.op ? styles.modeToggleActive : {}}
+                    onClick={() => !jsonMode.op && toggleJsonMode('op')}
+                  >JSON</span>
+                </span>
+              </div>
+              {jsonMode.op ? (
+                <textarea
+                  style={jsonErrors.op ? styles.inputInvalid : { ...styles.textarea }}
+                  value={formState.op}
+                  onChange={(e) => handleAnchorChange('op', e.target.value)}
+                  placeholder='e.g. {"action": "read", "scope": "users"}'
+                />
+              ) : (
+                <input
+                  style={styles.input}
+                  type="text"
+                  value={formState.op}
+                  onChange={(e) => setField('op', e.target.value)}
+                  placeholder="e.g. read from users table"
+                />
+              )}
+              {fieldErrors.op && <span style={styles.inlineError}>{fieldErrors.op}</span>}
+              {jsonErrors.op && <span style={styles.inlineError}>{jsonErrors.op}</span>}
+              <small style={styles.hint}>What is the agent trying to do? Use natural language. E.g. 'query user records', 'send a summary email', 'write to S3'.</small>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <div style={styles.field}>
-                <label style={styles.label}>Volume</label>
-                <select style={styles.select} value={volume} onChange={(e) => setVolume(e.target.value)}>
-                  <option value="">(none)</option>
-                  <option value="single">single</option>
-                  <option value="bulk">bulk</option>
-                </select>
+            <div style={styles.field}>
+              <div style={styles.labelRow}>
+                <label style={styles.label}>Target / Tool *</label>
+                <span style={styles.modeToggle}>
+                  <span
+                    style={!jsonMode.t ? styles.modeToggleActive : {}}
+                    onClick={() => jsonMode.t && toggleJsonMode('t')}
+                  >NL</span>
+                  {' | '}
+                  <span
+                    style={jsonMode.t ? styles.modeToggleActive : {}}
+                    onClick={() => !jsonMode.t && toggleJsonMode('t')}
+                  >JSON</span>
+                </span>
               </div>
-              <div style={styles.field}>
-                <label style={styles.label}>Risk: Authentication</label>
-                <select style={styles.select} value={authn} onChange={(e) => setAuthn(e.target.value)}>
-                  <option value="required">required</option>
-                  <option value="not_required">not_required</option>
-                </select>
-              </div>
-              <div style={styles.field}>
-                <label style={styles.checkboxLabel}>
-                  <input
-                    type="checkbox"
-                    checked={pii}
-                    onChange={(e) => setPii(e.target.checked)}
-                  />
-                  PII
-                </label>
-              </div>
+              {jsonMode.t ? (
+                <textarea
+                  style={jsonErrors.t ? styles.inputInvalid : { ...styles.textarea }}
+                  value={formState.t}
+                  onChange={(e) => handleAnchorChange('t', e.target.value)}
+                  placeholder='e.g. {"tool": "postgres", "table": "users"}'
+                />
+              ) : (
+                <input
+                  style={styles.input}
+                  type="text"
+                  value={formState.t}
+                  onChange={(e) => setField('t', e.target.value)}
+                  placeholder="e.g. postgres users table"
+                />
+              )}
+              {fieldErrors.t && <span style={styles.inlineError}>{fieldErrors.t}</span>}
+              {jsonErrors.t && <span style={styles.inlineError}>{jsonErrors.t}</span>}
+              <small style={styles.hint}>What resource or tool is being accessed? E.g. 'postgres users table', 'Gmail API', 'production S3 bucket'.</small>
             </div>
+            <div style={styles.field}>
+              <div style={styles.labelRow}>
+                <label style={styles.label}>Parameters</label>
+                <span style={styles.modeToggle}>
+                  <span
+                    style={!jsonMode.p ? styles.modeToggleActive : {}}
+                    onClick={() => jsonMode.p && toggleJsonMode('p')}
+                  >NL</span>
+                  {' | '}
+                  <span
+                    style={jsonMode.p ? styles.modeToggleActive : {}}
+                    onClick={() => !jsonMode.p && toggleJsonMode('p')}
+                  >JSON</span>
+                </span>
+              </div>
+              {jsonMode.p ? (
+                <textarea
+                  style={jsonErrors.p ? styles.inputInvalid : { ...styles.textarea }}
+                  value={formState.p}
+                  onChange={(e) => handleAnchorChange('p', e.target.value)}
+                  placeholder='e.g. {"columns": ["email", "name"]}'
+                />
+              ) : (
+                <input
+                  style={styles.input}
+                  type="text"
+                  value={formState.p}
+                  onChange={(e) => setField('p', e.target.value)}
+                  placeholder="optional"
+                />
+              )}
+              {jsonErrors.p && <span style={styles.inlineError}>{jsonErrors.p}</span>}
+              <small style={styles.hint}>Optional. Describe the parameters of this action. E.g. 'filtering by user_id and date range'. Leave blank if not relevant.</small>
+            </div>
+          </div>
+        </fieldset>
+
+        <fieldset style={styles.fieldset}>
+          <legend style={styles.legend}>Context</legend>
+          <small style={{ ...styles.hint, marginBottom: 12 }}>Session context ctx provides accumulated signals that influence risk-sensitive policies (context_allow, context_deny, context_defer).</small>
+          <div style={styles.grid}>
+            <div style={styles.field}>
+              <label style={styles.label}>Risk Context (NL)</label>
+              <input
+                style={styles.input}
+                type="text"
+                value={formState.ctxInitialRequest}
+                onChange={(e) => setField('ctxInitialRequest', e.target.value)}
+                placeholder="optional"
+              />
+              <small style={styles.hint}>The original user request or session framing. E.g. 'user asked to generate a monthly financial report'. Policies using context anchors compare against this.</small>
+            </div>
+            <div style={styles.field}>
+              <label style={styles.label}>Data Classifications (comma-separated)</label>
+              <input
+                style={styles.input}
+                type="text"
+                value={formState.ctxDataClassifications}
+                onChange={(e) => setField('ctxDataClassifications', e.target.value)}
+                placeholder="e.g. pii, financial"
+              />
+              <small style={styles.hint}>Comma-separated labels for data types accessed in this session. E.g. 'pii, financial, internal'. Influences risk scoring.</small>
+            </div>
+            <div style={styles.field}>
+              <label style={styles.label}>Cumulative Drift (0.0–1.0)</label>
+              <input
+                style={styles.input}
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                value={formState.ctxCumulativeDrift}
+                onChange={(e) => setField('ctxCumulativeDrift', e.target.value)}
+                placeholder="optional"
+              />
+              <small style={styles.hint}>Semantic distance between the agent's current action and the original user request (0.0 = perfectly aligned, 1.0 = completely diverged). Used to trigger drift-sensitive policies.</small>
+            </div>
+          </div>
+        </fieldset>
+
+        <fieldset style={styles.fieldset}>
+          <legend style={styles.legend}>Advanced</legend>
+          <div style={styles.field}>
+            <label style={styles.label}>Params (JSON for MODIFY testing)</label>
+            <textarea
+              style={styles.textarea}
+              value={formState.paramsRaw}
+              onChange={(e) => setField('paramsRaw', e.target.value)}
+              placeholder='optional — e.g. {"limit": 100}'
+            />
+            {fieldErrors.paramsRaw && <span style={styles.inlineError}>{fieldErrors.paramsRaw}</span>}
+            <small style={styles.hint}>Optional structured parameters for testing MODIFY-type policy enforcement. Must be valid JSON. E.g. {`{"table": "users", "limit": 100}`}. Leave blank for standard ALLOW/DENY testing.</small>
           </div>
         </fieldset>
 
@@ -381,7 +737,11 @@ export default function EnforcementDryRunForm() {
         </div>
       </form>
 
-      <EnforcementResultPanel result={result} />
+      </div>
+      <SuggestedIntentsPanel onSelect={(formSnapshot) => handleSelectRun({ formSnapshot, result: null })} />
+      </div>
+      <EnforcementResultPanel result={result} policies={policies} />
+      <RecentRunsPanel runs={runs} pinnedIndex={pinnedIndex} onSelect={(formSnapshot) => { const item = runs.find(r => r.formSnapshot === formSnapshot) ?? { formSnapshot, result: null }; handleSelectRun(item); }} onPin={handlePinRun} onClear={() => { setRuns([]); setPinnedIndex(null); }} />
     </div>
   );
 }

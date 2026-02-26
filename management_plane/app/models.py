@@ -1,203 +1,57 @@
 """
 Data contract type definitions for the Management Plane.
 
-This module defines Pydantic models that match the canonical schemas from plan.md sections 2.1-2.4.
+This module defines Pydantic models that match the AARM policy engine schemas.
 All types must remain synchronized across Python, TypeScript, and Rust components.
-
-Key constraints:
-- No Dict[str, Any] fields (Google GenAI compatibility)
-- All fields explicitly typed
-- Deterministic serialization
 """
 
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 from typing import Literal, Optional
 
 
 # ============================================================================
-# IntentEvent Types (Section 2.2)
+# AgentIdentity — exact-match identity fields (maps to AARM id)
 # ============================================================================
 
-class Actor(BaseModel):
-    """
-    Represents the entity initiating an action.
-
-    v1.2: Added "llm" and "agent" actor types for AI/autonomous systems.
-
-    Examples:
-        {"id": "user-123", "type": "user"}
-        {"id": "llm-gpt4", "type": "llm"}
-        {"id": "agent-123", "type": "agent"}
-    """
-    id: str
-    type: Literal["user", "service", "llm", "agent"]
-
-
-class Resource(BaseModel):
-    """
-    Describes the resource being accessed (v1.1 simplified).
-
-    MVP vocabulary: database, file, api only.
-
-    Example:
-        {"type": "database", "name": "users_db", "location": "cloud"}
-    """
-    type: Literal["database", "file", "api"]
-    name: Optional[str] = None
-    location: Optional[Literal["local", "cloud"]] = None
-
-
-class Data(BaseModel):
-    """
-    Describes the data characteristics of the operation (v1.1 simplified).
-
-    MVP: Simplified to sensitivity (internal/public), pii flag, and volume (single/bulk).
-
-    Example:
-        {"sensitivity": ["internal"], "pii": false, "volume": "single"}
-    """
-    sensitivity: list[Literal["internal", "public"]]
-    pii: Optional[bool] = None
-    volume: Optional[Literal["single", "bulk"]] = None
-
-
-class Risk(BaseModel):
-    """
-    Describes the risk context of the operation (v1.1 simplified).
-
-    MVP: Only authentication requirement (required/not_required).
-
-    Example:
-        {"authn": "required"}
-    """
-    authn: Literal["required", "not_required"]
-
-
-class LooseResource(BaseModel):
-    """
-    Resource model for v2 ingress before canonicalization.
-
-    Allows non-canonical resource types while preserving other constraints.
-    """
-
-    type: str
-    name: Optional[str] = None
-    location: Optional[Literal["local", "cloud"]] = None
-
-
-class LooseData(BaseModel):
-    """
-    Data model for v2 ingress before canonicalization.
-
-    Allows non-canonical sensitivity values.
-    """
-
-    sensitivity: list[str]
-    pii: Optional[bool] = None
-    volume: Optional[Literal["single", "bulk"]] = None
-
-
-class RateLimitContext(BaseModel):
-    """
-    Rate limit tracking context (v1.3).
-
-    Tracks the number of calls within a time window for rate limit enforcement.
-
-    Example:
-        {"agent_id": "agent-123", "window_start": 1699564800.0, "call_count": 5}
-    """
+class AgentIdentity(BaseModel):
     agent_id: str
-    window_start: float  # Unix timestamp
-    call_count: int = 0
+    principal_id: str
+    actor_type: Literal["user", "service", "llm", "agent"]
+    service_account: Optional[str] = None
+    role_scope: Optional[str] = None
+    # All fields are exact-match only — not embedded
 
+
+# ============================================================================
+# SessionContext — accumulated session context (maps to AARM ctx)
+# ============================================================================
+
+class SessionContext(BaseModel):
+    initial_request: Optional[str] = None   # NL, contributes to risk slice encoding
+    data_classifications: Optional[list[str]] = None
+    cumulative_drift: Optional[float] = None
+
+
+# ============================================================================
+# IntentEvent — AARM action tuple a = (t, op, p, id, ctx, ts)
+# ============================================================================
 
 class IntentEvent(BaseModel):
-    """
-    Structured record of an LLM/tool call intent (v1.3 with layer-based enforcement).
-
-    This is the canonical IntentEvent schema (plan.md section 2.2 + Appendix v1.3).
-    Captured by SDKs and sent to the Management Plane for encoding and comparison.
-
-    v1.2: Added "llm" and "agent" actor types for AI/autonomous systems.
-    v1.3: Added layer-based enforcement fields (layer, tool_name, tool_method,
-          tool_params, rate_limit_context) for Data Plane rule enforcement.
-
-    Example:
-        {
-            "id": "550e8400-e29b-41d4-a716-446655440000",
-            "schemaVersion": "v1.3",
-            "tenantId": "tenant-123",
-            "timestamp": 1699564800.0,
-            "actor": {"id": "agent-123", "type": "agent"},
-            "action": "read",
-            "resource": {"type": "database", "name": "users_db", "location": "cloud"},
-            "data": {"sensitivity": ["internal"], "pii": false, "volume": "single"},
-            "risk": {"authn": "required"},
-            "layer": "L4",
-            "tool_name": "web_search",
-            "tool_method": "query",
-            "tool_params": {"query": "example search"},
-            "rate_limit_context": {"agent_id": "agent-123", "window_start": 1699564800.0, "call_count": 5}
-        }
-    """
-    # Existing v1.2 fields
-    id: str  # UUID
-    schemaVersion: Literal["v1.1", "v1.2", "v1.3"] = "v1.3"  # v1.3: Added support for v1.3
-    tenantId: str
-    timestamp: float  # Unix timestamp
-    actor: Actor
-    action: Literal["read", "write", "delete", "export", "execute", "update"]
-    resource: Resource
-    data: Data
-    risk: Risk
-    context: Optional[dict] = None  # Future extensibility
-
-    # NEW v1.3 fields for layer-based enforcement
-    layer: Optional[str] = None  # "L0", "L1", ..., "L6"
-    tool_name: Optional[str] = None
-    tool_method: Optional[str] = None
-    tool_params: Optional[dict] = None
-    rate_limit_context: Optional[RateLimitContext] = None
-
-
-class LooseIntentEvent(BaseModel):
-    """
-    IntentEvent for v2 ingress before canonicalization.
-
-    Uses free-form strings for fields that will be canonicalized.
-    """
-
+    event_type: Literal["tool_call", "reasoning"]
     id: str
-    schemaVersion: Literal["v1.1", "v1.2", "v1.3"] = "v1.3"
-    tenantId: str
-    timestamp: float
-    actor: Actor
-    action: str
-    resource: LooseResource
-    data: LooseData
-    risk: Risk
-    context: Optional[dict] = None
-    layer: Optional[str] = None
-    tool_name: Optional[str] = None
-    tool_method: Optional[str] = None
-    tool_params: Optional[dict] = None
-    rate_limit_context: Optional[RateLimitContext] = None
+    tenant_id: Optional[str] = None
+    ts: float  # Unix timestamp — maps to AARM ts
+    identity: AgentIdentity  # maps to AARM id
+    t: str     # target tool/resource, free-form NL — maps to AARM t
+    op: str    # operation, free-form NL — maps to AARM op
+    p: Optional[str] = None    # parameter description, NL — maps to AARM p
+    params: Optional[dict] = None  # structured params for MODIFY enforcement
+    ctx: Optional[SessionContext] = None  # maps to AARM ctx
 
 
 # ============================================================================
-# DesignBoundary Types (Section 2.3 + v1.1 Constraints)
+# DesignBoundary Types — AARM policy π: (a, C) → decision
 # ============================================================================
-
-class BoundaryScope(BaseModel):
-    """
-    Defines the scope for a design boundary (tenant + optional domain filters).
-
-    Example:
-        {"tenantId": "tenant-123", "domains": ["database", "file"]}
-    """
-    tenantId: str
-    domains: Optional[list[str]] = None  # For candidate filtering
-
 
 class SliceThresholds(BaseModel):
     """
@@ -227,221 +81,33 @@ class SliceWeights(BaseModel):
     risk: float = Field(default=1.0, ge=0.0)
 
 
-class BoundaryRules(BaseModel):
-    """
-    Comparison rules for a design boundary.
-
-    - effect: Policy effect - "allow" permits matching operations, "deny" blocks them
-    - thresholds: Per-slice minimum similarity thresholds
-    - weights: Optional per-slice weights (for weighted-avg mode)
-    - decision: Aggregation method (min or weighted-avg)
-    - globalThreshold: Overall threshold for weighted-avg mode
-
-    Example (allow policy - min mode):
-        {
-            "effect": "allow",
-            "thresholds": {"action": 0.85, "resource": 0.80, "data": 0.75, "risk": 0.70},
-            "decision": "min"
-        }
-
-    Example (deny policy - blocks matching operations):
-        {
-            "effect": "deny",
-            "thresholds": {"action": 0.85, "resource": 0.80, "data": 0.75, "risk": 0.70},
-            "decision": "min"
-        }
-
-    Example (weighted-avg mode):
-        {
-            "effect": "allow",
-            "thresholds": {"action": 0.85, "resource": 0.80, "data": 0.75, "risk": 0.70},
-            "weights": {"action": 1.0, "resource": 1.0, "data": 1.5, "risk": 0.5},
-            "decision": "weighted-avg",
-            "globalThreshold": 0.78
-        }
-    """
-    effect: Literal["allow", "deny"] = "allow"  # Default to allow for backward compatibility
-    thresholds: SliceThresholds
-    weights: Optional[SliceWeights] = None
-    decision: Literal["min", "weighted-avg"]
-    globalThreshold: Optional[float] = Field(None, ge=0.0, le=1.0)
+ScoringMode = Literal["min", "weighted-avg"]
 
 
-# ============================================================================
-# v1.1 Boundary Constraints (Appendix - Simplified MVP)
-# ============================================================================
-
-class ActionConstraint(BaseModel):
-    """
-    Defines allowed actions and actor types for v1.2 boundaries.
-
-    v1.2: Added "llm" and "agent" to actor_types for AI/autonomous systems.
-
-    Examples:
-        {"actions": ["read", "write"], "actor_types": ["user"]}
-        {"actions": ["read"], "actor_types": ["llm", "agent"]}
-    """
-    actions: list[Literal["read", "write", "delete", "export", "execute", "update"]]
-    actor_types: list[Literal["user", "service", "llm", "agent"]]
-
-
-class LooseActionConstraint(BaseModel):
-    """
-    Loose action constraints for v2 ingress.
-
-    Allows non-canonical actions while preserving actor type constraints.
-    """
-
-    actions: list[str]
-    actor_types: list[Literal["user", "service", "llm", "agent"]]
-
-
-class ResourceConstraint(BaseModel):
-    """
-    Defines allowed resource types, names, and locations for v1.1 boundaries.
-
-    MVP: Only database, file, api types; exact name matching; local or cloud only.
-
-    Example:
-        {"types": ["database"], "names": ["prod_users"], "locations": ["cloud"]}
-    """
-    types: list[Literal["database", "file", "api"]]
-    names: Optional[list[str]] = None  # Exact match only for MVP
-    locations: Optional[list[Literal["local", "cloud"]]] = None
-
-
-class LooseResourceConstraint(BaseModel):
-    """
-    Loose resource constraints for v2 ingress.
-
-    Allows non-canonical resource types.
-    """
-
-    types: list[str]
-    names: Optional[list[str]] = None
-    locations: Optional[list[Literal["local", "cloud"]]] = None
-
-
-class DataConstraint(BaseModel):
-    """
-    Defines allowed data sensitivity levels and characteristics for v1.1 boundaries.
-
-    MVP: Simplified to internal/public sensitivity, pii flag, single/bulk volume.
-
-    Example:
-        {"sensitivity": ["internal"], "pii": false, "volume": "single"}
-    """
-    sensitivity: list[Literal["internal", "public"]]
-    pii: Optional[bool] = None
-    volume: Optional[Literal["single", "bulk"]] = None
-
-
-class LooseDataConstraint(BaseModel):
-    """
-    Loose data constraints for v2 ingress.
-
-    Allows non-canonical sensitivity values.
-    """
-
-    sensitivity: list[str]
-    pii: Optional[bool] = None
-    volume: Optional[Literal["single", "bulk"]] = None
-
-
-class RiskConstraint(BaseModel):
-    """
-    Defines required authentication level for v1.1 boundaries.
-
-    MVP: Simplified to required/not_required only.
-
-    Example:
-        {"authn": "required"}
-    """
-    authn: Literal["required", "not_required"]
-
-
-class BoundaryConstraints(BaseModel):
-    """
-    Complete constraint specification for v1.1 boundaries.
-
-    Replaces the need for exemplars in MVP - boundaries encode allowed operation patterns
-    using the same vocabulary as IntentEvents.
-
-    Example:
-        {
-            "action": {"actions": ["read"], "actor_types": ["user"]},
-            "resource": {"types": ["database"], "locations": ["cloud"]},
-            "data": {"sensitivity": ["internal"], "pii": false},
-            "risk": {"authn": "required"}
-        }
-    """
-    action: ActionConstraint
-    resource: ResourceConstraint
-    data: DataConstraint
-    risk: RiskConstraint
-
-
-class LooseBoundaryConstraints(BaseModel):
-    """
-    Loose boundary constraints for v2 ingress.
-    """
-
-    action: LooseActionConstraint
-    resource: LooseResourceConstraint
-    data: LooseDataConstraint
-    risk: RiskConstraint
+class PolicyMatch(BaseModel):
+    """NL match predicate m(a,C) — one description per slice."""
+    op: str          # NL anchor for action slice (maps to AARM op)
+    t: str           # NL anchor for resource slice (maps to AARM t)
+    p: Optional[str] = None    # NL anchor for data slice (maps to AARM p)
+    ctx: Optional[str] = None  # NL anchor for risk/context slice
 
 
 class DesignBoundary(BaseModel):
-    """
-    Policy rule with constraints-based encoding (v1.2 with LangGraph support).
-
-    Boundaries encode allowed operation patterns using same vocabulary as intents.
-    This is the canonical DesignBoundary schema (plan.md Appendix v1.2).
-
-    v1.2: Added support for "llm" and "agent" actor types in ActionConstraint.
-
-    Example:
-        {
-            "id": "boundary-002",
-            "name": "Safe Read Access",
-            "status": "active",
-            "type": "mandatory",
-            "boundarySchemaVersion": "v1.2",
-            "scope": {"tenantId": "tenant-123"},
-            "rules": {
-                "thresholds": {"action": 0.85, "resource": 0.80, "data": 0.75, "risk": 0.70},
-                "decision": "min"
-            },
-            "constraints": {
-                "action": {"actions": ["read"], "actor_types": ["user", "llm"]},
-                "resource": {"types": ["database", "file"], "locations": ["cloud"]},
-                "data": {"sensitivity": ["internal"], "pii": false, "volume": "single"},
-                "risk": {"authn": "required"}
-            },
-            "createdAt": 1699564800.0,
-            "updatedAt": 1699564800.0
-        }
-    """
     id: str
     name: str
+    tenant_id: str
     status: Literal["active", "disabled"]
-    type: Literal["mandatory", "optional"]
-    boundarySchemaVersion: Literal["v1.1", "v1.2"] = "v1.2"  # v1.2: Support both versions, default to v1.2
-    scope: BoundaryScope
-    layer: Optional[str] = None
-    rules: BoundaryRules
-    constraints: BoundaryConstraints
-    notes: Optional[str] = None
-    createdAt: float  # Unix timestamp
-    updatedAt: float  # Unix timestamp
-
-    # AARM Slice 6 fields
-    policy_type: Literal[
-        "forbidden", "context_allow", "context_deny", "context_defer"
-    ] = "context_allow"
+    policy_type: Literal["forbidden", "context_allow", "context_deny", "context_defer"]
+    priority: int
+    match: PolicyMatch      # m(a,C)
+    thresholds: SliceThresholds   # keep these unchanged
+    scoring_mode: ScoringMode
+    weights: Optional[SliceWeights] = None  # keep these unchanged
     drift_threshold: Optional[float] = None
     modification_spec: Optional[dict] = None
+    notes: Optional[str] = None
+    created_at: float
+    updated_at: float
 
     @field_validator("drift_threshold")
     @classmethod
@@ -450,64 +116,34 @@ class DesignBoundary(BaseModel):
             raise ValueError("drift_threshold must be between 0.0 (exclusive) and 1.0 (inclusive)")
         return v
 
-
-class LooseDesignBoundary(BaseModel):
-    """
-    DesignBoundary for v2 ingress before canonicalization.
-    """
-
-    id: str
-    name: str
-    status: Literal["active", "disabled"]
-    type: Literal["mandatory", "optional"]
-    boundarySchemaVersion: Literal["v1.1", "v1.2"] = "v1.2"
-    scope: BoundaryScope
-    layer: Optional[str] = None
-    rules: BoundaryRules
-    constraints: LooseBoundaryConstraints
-    notes: Optional[str] = None
-    createdAt: float
-    updatedAt: float
-
-    # AARM Slice 6 fields
-    policy_type: Literal[
-        "forbidden", "context_allow", "context_deny", "context_defer"
-    ] = "context_allow"
-    drift_threshold: Optional[float] = None
-    modification_spec: Optional[dict] = None
-
-    @field_validator("drift_threshold")
-    @classmethod
-    def drift_threshold_range(cls, v):
-        if v is not None and not (0.0 < v <= 1.0):
-            raise ValueError("drift_threshold must be between 0.0 (exclusive) and 1.0 (inclusive)")
-        return v
+    @model_validator(mode="after")
+    def scoring_mode_weights_consistency(self):
+        if self.scoring_mode == "min" and self.weights is not None:
+            raise ValueError("weights must be omitted when scoring_mode is 'min'")
+        if self.scoring_mode == "weighted-avg" and self.weights is None:
+            raise ValueError("weights are required when scoring_mode is 'weighted-avg'")
+        return self
 
 
 class PolicyWriteRequest(BaseModel):
     """
     Policy payload for create/update operations.
 
-    Uses loose constraints to allow canonicalization on ingest.
+    Wraps DesignBoundary directly.
     """
-
     id: str
     name: str
+    tenant_id: str
     status: Literal["active", "disabled"]
-    type: Literal["mandatory", "optional"]
-    boundarySchemaVersion: Literal["v1.1", "v1.2"] = "v1.2"
-    scope: BoundaryScope
-    layer: Optional[str] = None
-    rules: BoundaryRules
-    constraints: LooseBoundaryConstraints
-    notes: Optional[str] = None
-
-    # AARM Slice 6 fields
-    policy_type: Literal[
-        "forbidden", "context_allow", "context_deny", "context_defer"
-    ] = "context_allow"
+    policy_type: Literal["forbidden", "context_allow", "context_deny", "context_defer"]
+    priority: int
+    match: PolicyMatch
+    thresholds: SliceThresholds
+    scoring_mode: ScoringMode
+    weights: Optional[SliceWeights] = None
     drift_threshold: Optional[float] = None
     modification_spec: Optional[dict] = None
+    notes: Optional[str] = None
 
     @field_validator("drift_threshold")
     @classmethod
@@ -516,9 +152,17 @@ class PolicyWriteRequest(BaseModel):
             raise ValueError("drift_threshold must be between 0.0 (exclusive) and 1.0 (inclusive)")
         return v
 
+    @model_validator(mode="after")
+    def scoring_mode_weights_consistency(self):
+        if self.scoring_mode == "min" and self.weights is not None:
+            raise ValueError("weights must be omitted when scoring_mode is 'min'")
+        if self.scoring_mode == "weighted-avg" and self.weights is None:
+            raise ValueError("weights are required when scoring_mode is 'weighted-avg'")
+        return self
+
 
 class PolicyListResponse(BaseModel):
-    policies: list[LooseDesignBoundary]
+    policies: list[DesignBoundary]
 
 
 class PolicyDeleteResponse(BaseModel):
@@ -536,15 +180,12 @@ class PolicyClearResponse(BaseModel):
 
 
 # ============================================================================
-# FFI Boundary Types (Section 2.4)
+# FFI Boundary Types — gRPC response mapping
 # ============================================================================
 
 class BoundaryEvidence(BaseModel):
     """
     Evidence about a boundary's evaluation for debugging and audit purposes.
-
-    Provides visibility into which boundaries were evaluated and how they contributed
-    to the final decision.
 
     Fields:
     - boundary_id: Unique identifier for the boundary
@@ -552,29 +193,21 @@ class BoundaryEvidence(BaseModel):
     - effect: Policy effect (allow or deny)
     - decision: Individual boundary decision (0 = block, 1 = allow)
     - similarities: Per-slot similarity scores [action, resource, data, risk]
-
-    Example:
-        {
-            "boundary_id": "allow-read-ops",
-            "boundary_name": "Allow Read Operations",
-            "effect": "allow",
-            "decision": 1,
-            "similarities": [0.92, 0.88, 0.85, 0.90]
-        }
     """
     boundary_id: str
     boundary_name: str
     effect: Literal["allow", "deny"]
     decision: Literal[0, 1]
     similarities: list[float] = Field(min_length=4, max_length=4)
+    triggering_slice: str = Field(default="")
+    anchor_matched: str = Field(default="")
+    thresholds: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
+    scoring_mode: ScoringMode
 
 
 class ComparisonResult(BaseModel):
     """
     Result from Rust semantic sandbox comparison with boundary evidence.
-
-    This matches the C struct ComparisonResult in the Rust CDylib (plan.md section 2.4),
-    extended with evidence for debugging.
 
     Fields:
     - decision: 0 = block, 1 = allow
@@ -582,15 +215,6 @@ class ComparisonResult(BaseModel):
     - boundaries_evaluated: Number of boundaries evaluated (for diagnostics)
     - timestamp: Unix timestamp of comparison
     - evidence: List of boundary evaluations (for debugging/audit)
-
-    Example:
-        {
-            "decision": 1,
-            "slice_similarities": [0.92, 0.88, 0.85, 0.90],
-            "boundaries_evaluated": 3,
-            "timestamp": 1699564800.0,
-            "evidence": [...]
-        }
     """
     decision: int = Field(ge=0, le=1)  # 0 = block, 1 = allow
     slice_similarities: list[float] = Field(min_length=4, max_length=4)
@@ -614,9 +238,9 @@ class ComparisonResult(BaseModel):
     )
 
 
-class EnforcementResponseV3(BaseModel):
+class EnforcementResponse(BaseModel):
     """
-    Response model for the v3 enforce endpoint.
+    Response model for the enforce endpoint.
 
     Fields:
     - decision: Policy outcome — one of ALLOW, DENY, MODIFY, STEP_UP, DEFER
@@ -625,16 +249,6 @@ class EnforcementResponseV3(BaseModel):
     - drift_triggered: True when drift caused the enforcement outcome
     - slice_similarities: Per-slot cosine similarities [action, resource, data, risk]
     - evidence: Per-boundary evaluation details
-
-    Example:
-        {
-            "decision": "ALLOW",
-            "modified_params": null,
-            "drift_score": 0.12,
-            "drift_triggered": false,
-            "slice_similarities": [0.92, 0.88, 0.85, 0.90],
-            "evidence": []
-        }
     """
     decision: Literal["ALLOW", "DENY", "MODIFY", "STEP_UP", "DEFER"]
     modified_params: Optional[dict] = Field(default=None)
@@ -642,17 +256,3 @@ class EnforcementResponseV3(BaseModel):
     drift_triggered: bool
     slice_similarities: list[float] = Field(min_length=4, max_length=4)
     evidence: list[BoundaryEvidence] = Field(default_factory=list)
-
-
-# ============================================================================
-# Validation Vocabularies (v1.2 - LangGraph Support)
-# ============================================================================
-
-# From plan.md Appendix - Slot Contract V1.2
-VALID_ACTIONS = {"read", "write", "delete", "export", "execute", "update"}
-VALID_ACTOR_TYPES = {"user", "service", "llm", "agent"}  # v1.2: Added llm, agent
-VALID_RESOURCE_TYPES = {"database", "file", "api"}  # Simplified from v1.0
-VALID_RESOURCE_LOCATIONS = {"local", "cloud"}  # Simplified from v1.0
-VALID_DATA_SENSITIVITY = {"internal", "public"}  # Replaces categories in v1.0
-VALID_DATA_VOLUMES = {"single", "bulk"}  # Simplified from v1.0
-VALID_AUTHN_REQUIREMENTS = {"required", "not_required"}  # Simplified from v1.0

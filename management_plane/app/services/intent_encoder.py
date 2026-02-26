@@ -29,12 +29,7 @@ import numpy as np
 
 from app.models import IntentEvent
 from app.services.semantic_encoder import SemanticEncoder
-from app.services.canonical_slots import (
-    serialize_action_slot,
-    serialize_resource_slot,
-    serialize_data_slot,
-    serialize_risk_slot,
-)
+from app.services.param_canonicalizer import canonicalize_params
 
 logger = logging.getLogger(__name__)
 
@@ -64,15 +59,13 @@ class IntentEncoder(SemanticEncoder):
         """
         Build action slot string for encoding.
 
-        Uses vocabulary templates to assemble canonical text.
-
         Args:
             event: Canonical IntentEvent
 
         Returns:
             Slot text string
         """
-        return serialize_action_slot(event.action, event.actor.type)
+        return canonicalize_params(event.op)
 
     def _build_resource_slot(self, event: IntentEvent) -> str:
         """
@@ -84,11 +77,7 @@ class IntentEncoder(SemanticEncoder):
         Returns:
             Slot text string
         """
-        return serialize_resource_slot(
-            event.resource.type,
-            resource_name=event.resource.name,
-            resource_location=event.resource.location,
-        )
+        return canonicalize_params(event.t)
 
     def _build_data_slot(self, event: IntentEvent) -> str:
         """
@@ -100,11 +89,7 @@ class IntentEncoder(SemanticEncoder):
         Returns:
             Slot text string
         """
-        sensitivity = event.data.sensitivity[0] if event.data.sensitivity else "public"
-        pii = event.data.pii if event.data.pii is not None else False
-        volume = event.data.volume or "single"
-
-        return serialize_data_slot(sensitivity, pii=pii, volume=volume)
+        return canonicalize_params(event.p)
 
     def _build_risk_slot(self, event: IntentEvent) -> str:
         """
@@ -116,7 +101,9 @@ class IntentEncoder(SemanticEncoder):
         Returns:
             Slot text string
         """
-        return serialize_risk_slot(event.risk.authn)
+        if event.ctx is None or event.ctx.initial_request is None:
+            return ""
+        return canonicalize_params(event.ctx.initial_request)
 
     def encode(self, event: IntentEvent) -> np.ndarray:
         """

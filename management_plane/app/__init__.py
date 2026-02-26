@@ -2,33 +2,29 @@
 Management Plane application package.
 
 This package contains the FastAPI application and supporting modules for the
-Semantic Security MVP Management Plane.
+AARM policy engine Management Plane.
 """
 
 from app.models import (
-    Actor,
-    Resource,
-    Data,
-    Risk,
+    AgentIdentity,
+    SessionContext,
     IntentEvent,
-    BoundaryScope,
     SliceThresholds,
     SliceWeights,
-    BoundaryRules,
+    PolicyMatch,
     DesignBoundary,
     ComparisonResult,
+    EnforcementResponse,
 )
 
 __all__ = [
-    "Actor",
-    "Resource",
-    "Data",
-    "Risk",
+    "AgentIdentity",
+    "SessionContext",
     "IntentEvent",
-    "BoundaryScope",
     "SliceThresholds",
     "SliceWeights",
-    "BoundaryRules",
+    "PolicyMatch",
     "DesignBoundary",
     "ComparisonResult",
+    "EnforcementResponse",
 ]

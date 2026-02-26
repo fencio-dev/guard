@@ -92,6 +92,10 @@ pub struct RuleEvidence {
     pub rule_name: String,
     pub decision: u8, // 0 = blocked, 1 = passed
     pub similarities: [f32; 4],
+    pub triggering_slice: String,
+    pub anchor_matched: String,
+    pub thresholds: [f32; 4],
+    pub scoring_mode: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,10 +161,8 @@ impl EnforcementEngine {
         let intent: IntentEvent = serde_json::from_str(intent_json)
             .map_err(|e| format!("Failed to parse IntentEvent: {}", e))?;
 
-        // Extract layer from intent
-        let layer = intent
-            .layer_str()
-            .ok_or("Missing 'layer' field in IntentEvent")?;
+        // Layer is optional — default to "" which get_rules_for_layer treats as "match all".
+        let layer = intent.layer_str().unwrap_or("");
 
         println!("Enforcing intent for layer: {}", layer);
 
@@ -365,18 +367,38 @@ impl EnforcementEngine {
                         )
                     })?;
 
-            let cmp = self.compare_with_sandbox(&intent_vector, &rule_vector, rule)?;
+            let weights = self.get_rule_weights(rule);
+            let (ev_thresholds, ev_decision_mode) = self.get_rule_thresholds(rule)?;
+            let cmp = self.compare_with_sandbox(
+                &intent_vector,
+                &rule_vector,
+                ev_thresholds,
+                ev_decision_mode,
+                weights,
+            )?;
             let rule_eval_duration = 0u64; // timing not re-measured in closure for simplicity
+
+            let slice_names = ["action", "resource", "data", "risk"];
+            let triggering_slice = slice_names[cmp.triggering_slice_idx].to_string();
+
+            let scoring_mode = match ev_decision_mode {
+                DecisionMode::WeightedAvgMode => "weighted-avg".to_string(),
+                DecisionMode::MinMode => "min".to_string(),
+            };
 
             evidence.push(RuleEvidence {
                 rule_id: rule.rule_id().to_string(),
                 rule_name: rule.description().unwrap_or("").to_string(),
                 decision: cmp.decision,
                 similarities: cmp.slice_similarities,
+                triggering_slice,
+                anchor_matched: String::new(),
+                thresholds: ev_thresholds,
+                scoring_mode,
             });
 
             if let (Some(ref telemetry), Some(ref sid)) = (&self.telemetry, &session_id) {
-                let thresholds = self.get_thresholds(rule);
+                let thresholds = ev_thresholds;
                 let slice_details = self.build_slice_details(&cmp, &thresholds);
                 let payload = rule.management_plane_payload();
                 let rule_family = payload
@@ -716,6 +738,7 @@ impl EnforcementEngine {
             .bridge
             .all_rules()
             .into_iter()
+            .filter(|rule| rule.is_enabled())
             .filter(|rule| match (rule.layer(), requested_layer) {
                 (None, _) => true,
                 (Some(rule_layer), Some(requested)) => rule_layer == requested,
@@ -734,16 +757,22 @@ impl EnforcementEngine {
         &self,
         intent_vector: &[f32; 128],
         rule_vector: &RuleVector,
-        rule: &Arc<dyn RuleInstance>,
+        thresholds: [f32; 4],
+        decision_mode: DecisionMode,
+        weights: [f32; 4],
     ) -> Result<ComparisonResult, String> {
-        let (thresholds, decision_mode) = self.get_rule_thresholds(rule);
-
         Ok(compare_intent_vs_rule(
             intent_vector,
             rule_vector,
             thresholds,
             decision_mode,
+            weights,
         ))
+    }
+
+    /// Get slice weights from a rule instance
+    fn get_rule_weights(&self, rule: &Arc<dyn RuleInstance>) -> [f32; 4] {
+        rule.slice_weights()
     }
 
     /// Calculate average similarities across all evidence
@@ -766,11 +795,6 @@ impl EnforcementEngine {
             sums[2] / count,
             sums[3] / count,
         ]
-    }
-
-    /// Get thresholds for a rule family
-    fn get_thresholds(&self, rule: &Arc<dyn RuleInstance>) -> [f32; 4] {
-        self.get_rule_thresholds(rule).0
     }
 
     /// Build detailed slice comparison data for telemetry
@@ -809,7 +833,10 @@ impl EnforcementEngine {
         self.telemetry.as_ref().map(|t| t.stats())
     }
 
-    fn get_rule_thresholds(&self, rule: &Arc<dyn RuleInstance>) -> ([f32; 4], DecisionMode) {
+    fn get_rule_thresholds(
+        &self,
+        rule: &Arc<dyn RuleInstance>,
+    ) -> Result<([f32; 4], DecisionMode), String> {
         let payload = rule.management_plane_payload();
 
         if let Value::Object(map) = payload {
@@ -825,19 +852,39 @@ impl EnforcementEngine {
                 }
             }
 
-            let decision = map
-                .get("rule_decision")
-                .and_then(Value::as_str)
-                .map(|s| match s {
+            let decision = match map.get("rule_decision") {
+                Some(Value::String(mode)) => match mode.as_str() {
                     "weighted-avg" => DecisionMode::WeightedAvgMode,
-                    _ => DecisionMode::MinMode,
-                })
-                .unwrap_or(DecisionMode::MinMode);
+                    "min" => DecisionMode::MinMode,
+                    _ => {
+                        return Err(format!(
+                            "Rule '{}' has invalid rule_decision='{}' (expected 'min' or 'weighted-avg')",
+                            rule.rule_id(),
+                            mode
+                        ))
+                    }
+                },
+                Some(_) => {
+                    return Err(format!(
+                        "Rule '{}' has non-string rule_decision (expected 'min' or 'weighted-avg')",
+                        rule.rule_id()
+                    ))
+                }
+                None => {
+                    return Err(format!(
+                        "Rule '{}' missing required rule_decision (expected 'min' or 'weighted-avg')",
+                        rule.rule_id()
+                    ))
+                }
+            };
 
-            return (thresholds, decision);
+            return Ok((thresholds, decision));
         }
 
-        (DEFAULT_THRESHOLDS, DecisionMode::MinMode)
+        Err(format!(
+            "Rule '{}' has non-object management_plane_payload",
+            rule.rule_id()
+        ))
     }
 }
 

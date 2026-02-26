@@ -123,7 +123,7 @@ endif
 run-data:
 	@echo "🚀 Starting data-plane server on port 50051..."
 	@mkdir -p $(LOG_DIR)
-	cd data_plane/tupl_dp/bridge && cargo run --bin bridge-server
+	mkdir -p data && cd data_plane/tupl_dp/bridge && HITLOG_SQLITE_PATH=$(PWD)/data/hitlogs.db cargo run --bin bridge-server
 
 run-mcp:
 	@echo "🚀 Starting MCP server on port 3001..."
@@ -144,7 +144,7 @@ run-all:
 	@mkdir -p $(LOG_DIR)
 	@trap 'echo "🛑 Shutting down all services..."; kill 0' EXIT; \
 	echo "📍 Step 1/3: Starting data-plane on port 50051..."; \
-	(cd data_plane/tupl_dp/bridge && MANAGEMENT_PLANE_URL=http://localhost:$(or $(PORT),8001)/api/v2 cargo run --bin bridge-server > $(LOG_DIR)/data-plane.log 2>&1) & \
+	(mkdir -p data && cd data_plane/tupl_dp/bridge && HITLOG_SQLITE_PATH=$(PWD)/data/hitlogs.db MANAGEMENT_PLANE_URL=http://localhost:$(or $(PORT),8001)/api/v2 cargo run --bin bridge-server > $(LOG_DIR)/data-plane.log 2>&1) & \
 	DATA_PLANE_PID=$$!; \
 	echo "⏳ Waiting for data-plane on port 50051 (timeout: $(DATA_PLANE_HEALTH_CHECK_TIMEOUT)s)..."; \
 	for i in $$(seq 1 $(DATA_PLANE_HEALTH_CHECK_TIMEOUT)); do \

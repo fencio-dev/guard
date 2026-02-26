@@ -16,11 +16,6 @@ from app.services.policy_encoder import RuleVector
 class PolicyConverter:
     """Convert canonical DesignBoundary objects into gRPC RuleInstance formats."""
 
-    PRIORITY_MAP = {
-        "mandatory": 100,
-        "optional": 50,
-    }
-
     RULE_TYPE = "design_boundary"
 
     @staticmethod
@@ -36,17 +31,27 @@ class PolicyConverter:
         rule_instance = RuleInstance(
             rule_id=boundary.id,
             agent_id=tenant_id,
-            priority=PolicyConverter.PRIORITY_MAP.get(boundary.type, 50),
+            priority=boundary.priority,
             enabled=boundary.status == "active",
-            created_at_ms=int(boundary.createdAt * 1000),
+            created_at_ms=int(boundary.created_at * 1000),
             anchors=payload,
         )
 
-        if boundary.layer:
-            rule_instance.layer = boundary.layer
-
         for key, value in PolicyConverter._build_params(boundary).items():
             rule_instance.params[key].CopyFrom(value)
+
+        if boundary.scoring_mode == "weighted-avg":
+            weights = boundary.weights
+            if weights is None:
+                raise ValueError("weights are required when scoring_mode is 'weighted-avg'")
+            rule_instance.slice_weights.extend([
+                weights.action,
+                weights.resource,
+                weights.data,
+                weights.risk,
+            ])
+        else:
+            rule_instance.slice_weights.extend([1.0, 1.0, 1.0, 1.0])
 
         rule_instance.policy_type = boundary.policy_type
         rule_instance.drift_threshold = boundary.drift_threshold if boundary.drift_threshold is not None else 0.0
@@ -61,43 +66,46 @@ class PolicyConverter:
         params["rule_type"] = PolicyConverter._string_param(PolicyConverter.RULE_TYPE)
         params["boundary_id"] = PolicyConverter._string_param(boundary.id)
         params["boundary_name"] = PolicyConverter._string_param(boundary.name)
-        params["boundary_type"] = PolicyConverter._string_param(boundary.type)
         params["boundary_status"] = PolicyConverter._string_param(boundary.status)
-        params["rule_effect"] = PolicyConverter._string_param(boundary.rules.effect)
-        params["rule_decision"] = PolicyConverter._string_param(boundary.rules.decision)
+        params["policy_type"] = PolicyConverter._string_param(boundary.policy_type)
+        params["rule_decision"] = PolicyConverter._string_param(boundary.scoring_mode)
+        params["priority"] = PolicyConverter._float_param(float(boundary.priority))
         params["thresholds"] = PolicyConverter._json_param(
-            boundary.rules.thresholds.model_dump()
+            boundary.thresholds.model_dump()
         )
 
-        if boundary.rules.weights is not None:
+        if boundary.weights is not None:
             params["weights"] = PolicyConverter._json_param(
-                boundary.rules.weights.model_dump()
+                boundary.weights.model_dump()
             )
 
-        if boundary.rules.globalThreshold is not None:
-            params["global_threshold"] = PolicyConverter._float_param(
-                boundary.rules.globalThreshold
-            )
-
-        if boundary.constraints is not None:
-            params["constraints"] = PolicyConverter._json_param(
-                boundary.constraints.model_dump()
-            )
-
-        if boundary.scope is not None:
-            params["scope"] = PolicyConverter._json_param(boundary.scope.model_dump())
-            if boundary.scope.domains:
-                params["scope_domains"] = PolicyConverter._string_list_param(
-                    boundary.scope.domains
-                )
-
-        if boundary.layer:
-            params["layer"] = PolicyConverter._string_param(boundary.layer)
+        if boundary.match is not None:
+            params["match"] = PolicyConverter._json_param(boundary.match.model_dump())
 
         if boundary.notes:
             params["notes"] = PolicyConverter._string_param(boundary.notes)
 
         return params
+
+    @staticmethod
+    def _extract_action_anchors(boundary: DesignBoundary) -> list[str]:
+        return [boundary.match.op]
+
+    @staticmethod
+    def _extract_resource_anchors(boundary: DesignBoundary) -> list[str]:
+        return [boundary.match.t]
+
+    @staticmethod
+    def _extract_data_anchors(boundary: DesignBoundary) -> list[str]:
+        if boundary.match.p:
+            return [boundary.match.p]
+        return []
+
+    @staticmethod
+    def _extract_risk_anchors(boundary: DesignBoundary) -> list[str]:
+        if boundary.match.ctx:
+            return [boundary.match.ctx]
+        return []
 
     @staticmethod
     def rule_vector_to_anchor_payload(rule_vector: RuleVector) -> RuleAnchorsPayload:

@@ -19,6 +19,8 @@ pub struct ControlPlaneRule {
     pub drift_threshold: f32,
     /// JSON string for modification patch; empty if not a MODIFY rule
     pub modification_spec: String,
+    /// Per-slice weights [action, resource, data, risk]; defaults to [0.25; 4]
+    pub slice_weights: [f32; 4],
 }
 
 /// Parameter value from the control plane payload.

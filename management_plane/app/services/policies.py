@@ -10,12 +10,7 @@ from contextlib import contextmanager
 from typing import Iterator, Optional
 
 from app.chroma_client import get_rules_collection, upsert_rule_payload
-from app.models import (
-    BoundaryRules,
-    BoundaryScope,
-    LooseBoundaryConstraints,
-    LooseDesignBoundary,
-)
+from app.models import DesignBoundary, PolicyMatch, SliceThresholds, SliceWeights
 from app.services.policy_encoder import RuleVector
 from app.settings import config
 
@@ -25,7 +20,7 @@ logger = logging.getLogger(__name__)
 def _sqlite_path() -> str:
     url = config.DATABASE_URL
     if url.startswith("sqlite:///"):
-        raw_path = url[len("sqlite:///") :]
+        raw_path = url[len("sqlite:///"):]
         if raw_path.startswith("/"):
             return raw_path
         return os.path.abspath(raw_path)
@@ -53,11 +48,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             name TEXT NOT NULL,
             status TEXT NOT NULL,
             policy_type TEXT NOT NULL,
-            boundary_schema_version TEXT NOT NULL,
-            layer TEXT,
-            scope_json TEXT NOT NULL,
-            rules_json TEXT NOT NULL,
-            constraints_json TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 0,
+            match_json TEXT NOT NULL,
+            thresholds_json TEXT NOT NULL,
+            scoring_mode TEXT NOT NULL CHECK (scoring_mode IN ('min', 'weighted-avg')),
+            weights_json TEXT,
+            drift_threshold REAL,
+            modification_spec_json TEXT,
             notes TEXT,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL,
@@ -68,32 +65,41 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_policies_v2_tenant ON policies_v2(tenant_id)"
     )
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(policies_v2)").fetchall()}
+    if "scoring_mode" not in columns:
+        conn.execute(
+            "ALTER TABLE policies_v2 ADD COLUMN scoring_mode TEXT NOT NULL DEFAULT 'weighted-avg'"
+        )
+
     conn.commit()
 
 
-def _row_to_boundary(row: sqlite3.Row) -> LooseDesignBoundary:
-    scope = BoundaryScope.model_validate(json.loads(row["scope_json"]))
-    rules = BoundaryRules.model_validate(json.loads(row["rules_json"]))
-    constraints = LooseBoundaryConstraints.model_validate(
-        json.loads(row["constraints_json"])
-    )
-    return LooseDesignBoundary(
+def _row_to_boundary(row: sqlite3.Row) -> DesignBoundary:
+    match = PolicyMatch.model_validate(json.loads(row["match_json"]))
+    thresholds = SliceThresholds.model_validate(json.loads(row["thresholds_json"]))
+    weights = SliceWeights.model_validate(json.loads(row["weights_json"])) if row["weights_json"] else None
+    modification_spec = json.loads(row["modification_spec_json"]) if row["modification_spec_json"] else None
+    return DesignBoundary(
         id=row["policy_id"],
         name=row["name"],
+        tenant_id=row["tenant_id"],
         status=row["status"],
-        type=row["policy_type"],
-        boundarySchemaVersion=row["boundary_schema_version"],
-        scope=scope,
-        layer=row["layer"],
-        rules=rules,
-        constraints=constraints,
+        policy_type=row["policy_type"],
+        priority=row["priority"],
+        match=match,
+        thresholds=thresholds,
+        scoring_mode=row["scoring_mode"],
+        weights=weights,
+        drift_threshold=row["drift_threshold"],
+        modification_spec=modification_spec,
         notes=row["notes"],
-        createdAt=row["created_at"],
-        updatedAt=row["updated_at"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )
 
 
-def fetch_policy_record(tenant_id: str, policy_id: str) -> Optional[LooseDesignBoundary]:
+def fetch_policy_record(tenant_id: str, policy_id: str) -> Optional[DesignBoundary]:
     with _get_connection() as conn:
         row = conn.execute(
             """
@@ -105,7 +111,7 @@ def fetch_policy_record(tenant_id: str, policy_id: str) -> Optional[LooseDesignB
     return _row_to_boundary(row) if row else None
 
 
-def list_policy_records(tenant_id: str) -> list[LooseDesignBoundary]:
+def list_policy_records(tenant_id: str) -> list[DesignBoundary]:
     with _get_connection() as conn:
         rows = conn.execute(
             """
@@ -118,7 +124,7 @@ def list_policy_records(tenant_id: str) -> list[LooseDesignBoundary]:
     return [_row_to_boundary(row) for row in rows]
 
 
-def create_policy_record(boundary: LooseDesignBoundary, tenant_id: str) -> LooseDesignBoundary:
+def create_policy_record(boundary: DesignBoundary, tenant_id: str) -> DesignBoundary:
     with _get_connection() as conn:
         existing = conn.execute(
             """
@@ -138,37 +144,41 @@ def create_policy_record(boundary: LooseDesignBoundary, tenant_id: str) -> Loose
                 name,
                 status,
                 policy_type,
-                boundary_schema_version,
-                layer,
-                scope_json,
-                rules_json,
-                constraints_json,
+                priority,
+                match_json,
+                thresholds_json,
+                scoring_mode,
+                weights_json,
+                drift_threshold,
+                modification_spec_json,
                 notes,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 tenant_id,
                 boundary.id,
                 boundary.name,
                 boundary.status,
-                boundary.type,
-                boundary.boundarySchemaVersion,
-                boundary.layer,
-                json.dumps(boundary.scope.model_dump(), separators=(",", ":")),
-                json.dumps(boundary.rules.model_dump(), separators=(",", ":")),
-                json.dumps(boundary.constraints.model_dump(), separators=(",", ":")),
+                boundary.policy_type,
+                boundary.priority,
+                json.dumps(boundary.match.model_dump(), separators=(",", ":")),
+                json.dumps(boundary.thresholds.model_dump(), separators=(",", ":")),
+                boundary.scoring_mode,
+                json.dumps(boundary.weights.model_dump(), separators=(",", ":")) if boundary.weights else None,
+                boundary.drift_threshold,
+                json.dumps(boundary.modification_spec, separators=(",", ":")) if boundary.modification_spec else None,
                 boundary.notes,
-                boundary.createdAt,
-                boundary.updatedAt,
+                boundary.created_at,
+                boundary.updated_at,
             ),
         )
         conn.commit()
     return boundary
 
 
-def update_policy_record(boundary: LooseDesignBoundary, tenant_id: str) -> LooseDesignBoundary:
+def update_policy_record(boundary: DesignBoundary, tenant_id: str) -> DesignBoundary:
     with _get_connection() as conn:
         row = conn.execute(
             """
@@ -186,11 +196,13 @@ def update_policy_record(boundary: LooseDesignBoundary, tenant_id: str) -> Loose
             SET name = ?,
                 status = ?,
                 policy_type = ?,
-                boundary_schema_version = ?,
-                layer = ?,
-                scope_json = ?,
-                rules_json = ?,
-                constraints_json = ?,
+                priority = ?,
+                match_json = ?,
+                thresholds_json = ?,
+                scoring_mode = ?,
+                weights_json = ?,
+                drift_threshold = ?,
+                modification_spec_json = ?,
                 notes = ?,
                 updated_at = ?
             WHERE tenant_id = ? AND policy_id = ?
@@ -198,14 +210,16 @@ def update_policy_record(boundary: LooseDesignBoundary, tenant_id: str) -> Loose
             (
                 boundary.name,
                 boundary.status,
-                boundary.type,
-                boundary.boundarySchemaVersion,
-                boundary.layer,
-                json.dumps(boundary.scope.model_dump(), separators=(",", ":")),
-                json.dumps(boundary.rules.model_dump(), separators=(",", ":")),
-                json.dumps(boundary.constraints.model_dump(), separators=(",", ":")),
+                boundary.policy_type,
+                boundary.priority,
+                json.dumps(boundary.match.model_dump(), separators=(",", ":")),
+                json.dumps(boundary.thresholds.model_dump(), separators=(",", ":")),
+                boundary.scoring_mode,
+                json.dumps(boundary.weights.model_dump(), separators=(",", ":")) if boundary.weights else None,
+                boundary.drift_threshold,
+                json.dumps(boundary.modification_spec, separators=(",", ":")) if boundary.modification_spec else None,
                 boundary.notes,
-                boundary.updatedAt,
+                boundary.updated_at,
                 tenant_id,
                 boundary.id,
             ),

@@ -17,6 +17,19 @@ function truncate(str, len = 12) {
   return str.length > len ? str.slice(0, len) + '...' : str;
 }
 
+const DECISION_COLORS = {
+  ALLOW:   { background: '#d4edda', color: '#155724' },
+  DENY:    { background: '#f8d7da', color: '#721c24' },
+  MODIFY:  { background: '#cce5ff', color: '#004085' },
+  STEP_UP: { background: '#fff3cd', color: '#856404' },
+  DEFER:   { background: '#e2e3e5', color: '#383d41' },
+};
+
+function decisionBadgeStyle(decision) {
+  const colors = DECISION_COLORS[decision] ?? { background: '#e2e3e5', color: '#383d41' };
+  return { ...styles.badge, ...colors };
+}
+
 function formatDuration(us) {
   if (us == null) return '—';
   return (us / 1000).toFixed(2) + ' ms';
@@ -91,24 +104,12 @@ const styles = {
     fontSize: 12,
     fontFamily: 'monospace',
   },
-  badgeAllow: {
+  badge: {
     display: 'inline-block',
     fontSize: 11,
     fontWeight: 700,
     padding: '2px 8px',
     borderRadius: 4,
-    background: '#d4edda',
-    color: '#155724',
-    letterSpacing: 0.5,
-  },
-  badgeBlock: {
-    display: 'inline-block',
-    fontSize: 11,
-    fontWeight: 700,
-    padding: '2px 8px',
-    borderRadius: 4,
-    background: '#f8d7da',
-    color: '#721c24',
     letterSpacing: 0.5,
   },
   emptyState: {
@@ -181,8 +182,8 @@ const styles = {
 };
 
 function SessionDetail({ session, onClose }) {
-  const decision = session?.final_decision === 1 ? 'ALLOW' : 'BLOCK';
-  const badge = decision === 'ALLOW' ? styles.badgeAllow : styles.badgeBlock;
+  const decision = session?.final_decision ?? '—';
+  const badge = decisionBadgeStyle(decision);
 
   return (
     <div style={styles.detailPanel}>
@@ -269,7 +270,8 @@ export default function TelemetryTable() {
     setLoadingDetail(true);
     try {
       const detail = await fetchSessionDetail(session.session_id);
-      setSelectedSession(detail);
+      // Merge: full action_history from detail + pre-computed fields (final_decision) from list row
+      setSelectedSession({ ...session, ...(detail?.session ?? detail) });
     } catch (err) {
       setSelectedSession(session); // fall back to summary data
     } finally {
@@ -340,8 +342,8 @@ export default function TelemetryTable() {
             ) : (
               sessions.map((s) => {
                 const isSelected = s.session_id === selectedRowId;
-                const decision = s.final_decision === 1 ? 'ALLOW' : 'BLOCK';
-                const badge = decision === 'ALLOW' ? styles.badgeAllow : styles.badgeBlock;
+                const decision = s.final_decision ?? '—';
+                const badge = decisionBadgeStyle(decision);
                 const rowBg = isSelected ? '#e8f0fe' : undefined;
 
                 return (

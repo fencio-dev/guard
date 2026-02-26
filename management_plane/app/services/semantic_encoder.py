@@ -59,7 +59,7 @@ class SemanticEncoder:
     """
 
     # Model configuration (shared across subclasses)
-    MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+    MODEL_NAME = "redis/langcache-embed-v3-small"
     MODEL_DIM = 384
     SLOT_DIM = 32
 
@@ -102,6 +102,8 @@ class SemanticEncoder:
         if _MODEL is None:
             logger.info(f"Loading sentence-transformers model: {model_name}")
             _MODEL = SentenceTransformer(model_name)
+            test_vec = _MODEL.encode(["test"])
+            assert test_vec.shape[1] == 384, f"Expected 384-dim output from embedding model, got {test_vec.shape[1]}"
             logger.info(f"Model loaded: {_MODEL.get_sentence_embedding_dimension()}d embeddings")
 
         return _MODEL

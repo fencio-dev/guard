@@ -151,6 +151,51 @@ def write_call(agent_id: str, request_id: str, action: str, decision: str) -> No
         )
 
 
+def update_call_decision(agent_id: str, request_id: str, decision: str) -> None:
+    """
+    Update the decision field of the action_history entry matching request_id.
+
+    Finds the entry in action_history for agent_id that matches request_id
+    and updates its decision field in-place. Never appends a new entry.
+    Fail-soft: logs on any error, does not raise.
+    """
+    if not agent_id:
+        return
+    try:
+        conn = _get_connection()
+        try:
+            row = conn.execute(
+                "SELECT action_history FROM agent_sessions WHERE agent_id = ?",
+                (agent_id,),
+            ).fetchone()
+
+            if row is None:
+                return
+
+            history = json.loads(row["action_history"])
+            for entry in history:
+                if entry.get("request_id") == request_id:
+                    entry["decision"] = decision
+                    break
+
+            conn.execute(
+                "UPDATE agent_sessions SET action_history = ? WHERE agent_id = ?",
+                (json.dumps(history), agent_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    except Exception as exc:
+        logger.error(
+            "session_store: update_call_decision failed for agent_id=%s request_id=%s: %s",
+            agent_id,
+            request_id,
+            exc,
+            exc_info=True,
+        )
+
+
 def get_session(agent_id: str) -> dict | None:
     """
     Return the full session row for agent_id as a dict, or None if not found.
@@ -346,6 +391,95 @@ def get_session_drift(agent_id: str) -> float:
             exc_info=True,
         )
         return 0.0
+
+
+def list_sessions(
+    limit: int = 50,
+    offset: int = 0,
+    agent_id: str | None = None,
+    decision: str | None = None,
+    start_time_ms: int | None = None,
+    end_time_ms: int | None = None,
+) -> dict:
+    """
+    Return a paginated list of sessions with optional filters.
+
+    Filters:
+      - agent_id: exact match on agent_id
+      - decision: match on the last action_history entry's "decision" field
+      - start_time_ms / end_time_ms: filter on last_seen_at (stored as seconds)
+
+    Returns a dict with keys: sessions, total_count, limit, offset.
+    """
+    try:
+        conditions = []
+        params: list = []
+
+        if agent_id is not None:
+            conditions.append("agent_id = ?")
+            params.append(agent_id)
+
+        if start_time_ms is not None:
+            conditions.append("last_seen_at >= ?")
+            params.append(start_time_ms / 1000.0)
+
+        if end_time_ms is not None:
+            conditions.append("last_seen_at <= ?")
+            params.append(end_time_ms / 1000.0)
+
+        where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        conn = _get_connection()
+        try:
+            rows = conn.execute(
+                f"SELECT * FROM agent_sessions {where_clause} ORDER BY last_seen_at DESC LIMIT ? OFFSET ?",
+                params + [limit, offset],
+            ).fetchall()
+
+            total_row = conn.execute(
+                f"SELECT COUNT(*) FROM agent_sessions {where_clause}",
+                params,
+            ).fetchone()
+        finally:
+            conn.close()
+
+        total_count = total_row[0] if total_row else 0
+
+        sessions = []
+        for row in rows:
+            history = json.loads(row["action_history"])
+            final_decision = history[-1]["decision"] if history else None
+
+            if decision is not None and final_decision != decision:
+                continue
+
+            sessions.append(
+                {
+                    "session_id": row["agent_id"],
+                    "agent_id": row["agent_id"],
+                    "call_count": row["call_count"],
+                    "created_at_ms": int(row["created_at"] * 1000),
+                    "last_seen_at_ms": int(row["last_seen_at"] * 1000),
+                    "final_decision": final_decision,
+                    "cumulative_drift": float(row["cumulative_drift"]),
+                }
+            )
+
+        # If decision filter was applied post-query, total_count needs recomputing
+        if decision is not None:
+            total_count = len(sessions)
+            sessions = sessions[offset : offset + limit]
+
+        return {
+            "sessions": sessions,
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset,
+        }
+
+    except Exception as exc:
+        logger.error("session_store: list_sessions failed: %s", exc, exc_info=True)
+        return {"sessions": [], "total_count": 0, "limit": limit, "offset": offset}
 
 
 # ---------------------------------------------------------------------------
