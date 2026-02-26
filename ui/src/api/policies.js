@@ -43,3 +43,9 @@ export async function updatePolicy(id, data) {
   if (!res.ok) throw new Error(`Failed to update policy ${id}: ${res.status}`);
   return res.json();
 }
+
+export async function getPolicy(id) {
+  const res = await fetch(`/api/v2/policies/${id}`, { headers: getAuthHeaders() });
+  if (!res.ok) return null;
+  return res.json();
+}
