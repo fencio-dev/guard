@@ -19,6 +19,8 @@ pub struct DesignBoundaryRule {
     drift_threshold: f32,
     /// Optional JSON patch applied when decision is MODIFY.
     modification_spec: Option<Value>,
+    /// Per-slice weights [action, resource, data, risk].
+    slice_weights: [f32; 4],
 }
 
 impl DesignBoundaryRule {
@@ -44,6 +46,7 @@ impl DesignBoundaryRule {
             policy_type: PolicyType::default(),
             drift_threshold: 0.0,
             modification_spec: None,
+            slice_weights: [0.25; 4],
         }
     }
 
@@ -60,6 +63,7 @@ impl DesignBoundaryRule {
         policy_type: PolicyType,
         drift_threshold: f32,
         modification_spec: Option<Value>,
+        slice_weights: [f32; 4],
     ) -> Self {
         Self {
             rule_id,
@@ -73,6 +77,7 @@ impl DesignBoundaryRule {
             policy_type,
             drift_threshold,
             modification_spec,
+            slice_weights,
         }
     }
 }
@@ -120,5 +125,9 @@ impl RuleInstance for DesignBoundaryRule {
 
     fn modification_spec(&self) -> Option<&Value> {
         self.modification_spec.as_ref()
+    }
+
+    fn slice_weights(&self) -> [f32; 4] {
+        self.slice_weights
     }
 }

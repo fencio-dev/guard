@@ -92,6 +92,8 @@ pub struct RuleEvidence {
     pub rule_name: String,
     pub decision: u8, // 0 = blocked, 1 = passed
     pub similarities: [f32; 4],
+    pub triggering_slice: String,
+    pub anchor_matched: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,10 +159,8 @@ impl EnforcementEngine {
         let intent: IntentEvent = serde_json::from_str(intent_json)
             .map_err(|e| format!("Failed to parse IntentEvent: {}", e))?;
 
-        // Extract layer from intent
-        let layer = intent
-            .layer_str()
-            .ok_or("Missing 'layer' field in IntentEvent")?;
+        // Layer is optional — default to "" which get_rules_for_layer treats as "match all".
+        let layer = intent.layer_str().unwrap_or("");
 
         println!("Enforcing intent for layer: {}", layer);
 
@@ -365,14 +365,20 @@ impl EnforcementEngine {
                         )
                     })?;
 
-            let cmp = self.compare_with_sandbox(&intent_vector, &rule_vector, rule)?;
+            let weights = self.get_rule_weights(rule);
+            let cmp = self.compare_with_sandbox(&intent_vector, &rule_vector, rule, weights)?;
             let rule_eval_duration = 0u64; // timing not re-measured in closure for simplicity
+
+            let slice_names = ["action", "resource", "data", "risk"];
+            let triggering_slice = slice_names[cmp.triggering_slice_idx].to_string();
 
             evidence.push(RuleEvidence {
                 rule_id: rule.rule_id().to_string(),
                 rule_name: rule.description().unwrap_or("").to_string(),
                 decision: cmp.decision,
                 similarities: cmp.slice_similarities,
+                triggering_slice,
+                anchor_matched: String::new(),
             });
 
             if let (Some(ref telemetry), Some(ref sid)) = (&self.telemetry, &session_id) {
@@ -735,6 +741,7 @@ impl EnforcementEngine {
         intent_vector: &[f32; 128],
         rule_vector: &RuleVector,
         rule: &Arc<dyn RuleInstance>,
+        weights: [f32; 4],
     ) -> Result<ComparisonResult, String> {
         let (thresholds, decision_mode) = self.get_rule_thresholds(rule);
 
@@ -743,7 +750,13 @@ impl EnforcementEngine {
             rule_vector,
             thresholds,
             decision_mode,
+            weights,
         ))
+    }
+
+    /// Get per-slice weights from a rule instance
+    fn get_rule_weights(&self, rule: &Arc<dyn RuleInstance>) -> [f32; 4] {
+        rule.slice_weights()
     }
 
     /// Calculate average similarities across all evidence
@@ -830,14 +843,14 @@ impl EnforcementEngine {
                 .and_then(Value::as_str)
                 .map(|s| match s {
                     "weighted-avg" => DecisionMode::WeightedAvgMode,
-                    _ => DecisionMode::MinMode,
+                    _ => DecisionMode::WeightedAvgMode,
                 })
-                .unwrap_or(DecisionMode::MinMode);
+                .unwrap_or(DecisionMode::WeightedAvgMode);
 
             return (thresholds, decision);
         }
 
-        (DEFAULT_THRESHOLDS, DecisionMode::MinMode)
+        (DEFAULT_THRESHOLDS, DecisionMode::WeightedAvgMode)
     }
 }
 

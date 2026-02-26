@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     Handles startup and shutdown tasks:
     - Validate configuration
-    - Initialize Rust library connection
+    - Initialize encoder services
     - Setup resources
     - Cleanup on shutdown
     """
@@ -47,51 +47,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         config.validate()
         logger.info("Configuration validated successfully")
 
-        # Initialize canonicalization services if enabled
-        if config.CANONICALIZATION_ENABLED:
-            try:
-                from .endpoints.enforcement_v2 import (
-                    get_canonicalizer,
-                    get_intent_encoder,
-                    get_policy_encoder,
-                    get_canonicalization_logger,
-                )
+        # Initialize encoder services
+        try:
+            from .endpoints.enforcement_v2 import (
+                get_intent_encoder,
+                get_policy_encoder,
+            )
 
-                logger.info("Initializing canonicalization services...")
+            # Load intent encoder
+            intent_encoder = get_intent_encoder()
+            if intent_encoder:
+                logger.info("Intent encoder initialized")
+            else:
+                logger.warning("Intent encoder not available")
 
-                # Load canonicalizer
-                start_time = time.time()
-                canonicalizer = get_canonicalizer()
-                if canonicalizer:
-                    canon_time = (time.time() - start_time) * 1000
-                    logger.info(f"BERT canonicalizer loaded in {canon_time:.1f}ms")
-                else:
-                    logger.warning("BERT canonicalizer not available")
+            # Load policy encoder
+            policy_encoder = get_policy_encoder()
+            if policy_encoder:
+                logger.info("Policy encoder initialized")
+            else:
+                logger.warning("Policy encoder not available")
 
-                # Load intent encoder
-                intent_encoder = get_intent_encoder()
-                if intent_encoder:
-                    logger.info("Intent encoder initialized")
-                else:
-                    logger.warning("Intent encoder not available")
-
-                # Load policy encoder
-                policy_encoder = get_policy_encoder()
-                if policy_encoder:
-                    logger.info("Policy encoder initialized")
-                else:
-                    logger.warning("Policy encoder not available")
-
-                # Initialize logger
-                canon_logger = get_canonicalization_logger()
-                if canon_logger:
-                    await canon_logger.start()
-                    logger.info(f"Canonicalization logger started: {canon_logger.log_dir}")
-                else:
-                    logger.warning("Canonicalization logger not available")
-
-            except Exception as e:
-                logger.warning(f"Canonicalization services initialization warning: {e}")
+        except Exception as e:
+            logger.warning(f"Encoder services initialization warning: {e}")
 
     except Exception as e:
         logger.error(f"Startup validation failed: {e}", exc_info=True)
@@ -125,18 +103,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     cleanup_task.cancel()
     logger.info("Shutting down Management Plane")
 
-    # Cleanup canonicalization logger
-    if config.CANONICALIZATION_ENABLED:
-        try:
-            from .endpoints.enforcement_v2 import get_canonicalization_logger
-
-            canon_logger = get_canonicalization_logger()
-            if canon_logger:
-                await canon_logger.stop()
-                logger.info("Canonicalization logger stopped")
-        except Exception as e:
-            logger.warning(f"Error stopping canonicalization logger: {e}")
-
 
 # Create FastAPI application
 app = FastAPI(
@@ -157,7 +123,7 @@ app.add_middleware(
 
 # Register routers
 app.include_router(health.router)
-app.include_router(enforcement_v2.router, prefix=config.API_V2_PREFIX)  # NEW v2: Canonicalization + Enforcement
+app.include_router(enforcement_v2.router, prefix=config.API_V2_PREFIX)
 app.include_router(policies_v2.router, prefix=config.API_V2_PREFIX)
 app.include_router(telemetry.router, prefix=config.API_V2_PREFIX)
 

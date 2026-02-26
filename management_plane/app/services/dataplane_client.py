@@ -7,7 +7,7 @@ Internal client for Management Plane to communicate with Rust Data Plane.
 import logging
 import grpc
 import json
-from typing import Optional, List, Any
+from typing import Optional, List
 from app.generated.rule_installation_pb2 import (
     EnforceRequest,
     EnforceResponse,
@@ -19,7 +19,7 @@ from app.generated.rule_installation_pb2 import (
     RemovePolicyRequest,
 )
 from app.generated.rule_installation_pb2_grpc import DataPlaneStub
-from app.models import BoundaryEvidence, ComparisonResult, DesignBoundary
+from app.models import BoundaryEvidence, ComparisonResult, DesignBoundary, IntentEvent
 from app.services.policy_converter import PolicyConverter
 from app.services.policy_encoder import RuleVector
 
@@ -55,28 +55,44 @@ class DataPlaneClient:
 
         self.stub = DataPlaneStub(self.channel)
 
+    def _to_dataplane_payload(self, intent: IntentEvent) -> str:
+        """Map Python IntentEvent to the Rust data plane wire format (v1.3)."""
+        identity = intent.identity
+        ctx = intent.ctx
+        return json.dumps({
+            "id": intent.id,
+            "schemaVersion": "v1.3",
+            "tenantId": intent.tenant_id or "",
+            "timestamp": intent.ts,
+            "actor": {
+                "id": identity.agent_id,
+                "type": identity.actor_type,
+            },
+            "action": intent.op,
+            "resource": {
+                "type": intent.t,
+            },
+            "data": {
+                "sensitivity": (ctx.data_classifications or []) if ctx else [],
+            },
+            "risk": {
+                "authn": "none",
+            },
+            "context": ctx.model_dump() if ctx else None,
+            "tool_params": intent.params,
+        })
+
     def enforce(
         self,
-        intent: Any,  # Can be IntentEvent or dict
+        intent: IntentEvent,
         intent_vector: Optional[List[float]] = None,
         request_id: str = "",
         drift_score: float = 0.0,
         session_id: str = "",
     ) -> ComparisonResult:
         """Enforce rules against an IntentEvent."""
-        # Validate required fields for v1.3
-        layer = getattr(intent, 'layer', None) or (intent.get('layer') if isinstance(intent, dict) else None)
-        if not layer:
-            raise ValueError("IntentEvent must include 'layer' field for enforcement")
-
-        # Serialize IntentEvent to JSON
         try:
-            if hasattr(intent, 'model_dump_json'):
-                intent_json = intent.model_dump_json()
-            elif isinstance(intent, dict):
-                intent_json = json.dumps(intent)
-            else:
-                intent_json = str(intent)
+            intent_json = self._to_dataplane_payload(intent)
         except Exception as e:
             raise ValueError(f"Failed to serialize IntentEvent: {e}")
 
@@ -118,7 +134,7 @@ class DataPlaneClient:
         if not boundaries or len(boundaries) != len(rule_vectors):
             raise ValueError("Boundaries and rule vectors must be non-empty and aligned")
 
-        agent_id = boundaries[0].scope.tenantId
+        agent_id = boundaries[0].tenant_id
         rules = [
             PolicyConverter.boundary_to_rule_instance(boundary, vector, agent_id)
             for boundary, vector in zip(boundaries, rule_vectors)
@@ -212,6 +228,8 @@ class DataPlaneClient:
                 effect="deny" if ev.decision == 0 else "allow",
                 decision=ev.decision,
                 similarities=list(ev.similarities),
+                triggering_slice=ev.triggering_slice,
+                anchor_matched=ev.anchor_matched,
             )
             for ev in response.evidence
         ]

@@ -1,12 +1,5 @@
 import { useState } from 'react';
-import { createPolicy } from '../api/policies';
-
-const LAYERS = ['L0', 'L1', 'L2', 'L3', 'L4', 'L5', 'L6'];
-
-const ACTION_OPTIONS = ['read', 'write', 'update', 'delete', 'execute', 'export'];
-const ACTOR_TYPE_OPTIONS = ['user', 'service', 'llm', 'agent'];
-const RESOURCE_TYPE_OPTIONS = ['database', 'storage', 'api', 'queue', 'cache'];
-const SENSITIVITY_OPTIONS = ['public', 'internal', 'secret'];
+import { createPolicy, updatePolicy } from '../api/policies';
 
 const styles = {
   panel: {
@@ -70,14 +63,15 @@ const styles = {
     fontFamily: 'inherit',
     background: '#fff',
   },
-  multiSelect: {
+  textarea: {
     fontSize: 13,
-    padding: '4px',
+    padding: '6px 10px',
     border: '1px solid #ccc',
     borderRadius: 4,
     fontFamily: 'inherit',
     background: '#fff',
-    minHeight: 80,
+    resize: 'vertical',
+    minHeight: 72,
   },
   sliderRow: {
     display: 'flex',
@@ -93,20 +87,6 @@ const styles = {
     color: '#555',
     minWidth: 34,
     textAlign: 'right',
-  },
-  checkboxGroup: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: '8px 16px',
-    paddingTop: 2,
-  },
-  checkboxLabel: {
-    fontSize: 13,
-    color: '#333',
-    display: 'flex',
-    alignItems: 'center',
-    gap: 5,
-    cursor: 'pointer',
   },
   footer: {
     display: 'flex',
@@ -154,24 +134,47 @@ const styles = {
     color: '#c0392b',
     marginTop: 2,
   },
+  hint: {
+    display: 'block',
+    fontSize: '11px',
+    color: '#888',
+    marginTop: '3px',
+    lineHeight: '1.4',
+  },
 };
 
-export default function PolicyForm({ onSuccess, onCancel }) {
-  const [name, setName] = useState('');
-  const [tenantId, setTenantId] = useState('');
-  const [status, setStatus] = useState('active');
-  const [type, setType] = useState('mandatory');
-  const [layer, setLayer] = useState('');
-  const [effect, setEffect] = useState('allow');
-  const [decision, setDecision] = useState('min');
-  const [thresholds, setThresholds] = useState({ action: 0.85, resource: 0.85, data: 0.85, risk: 0.85 });
-  const [actions, setActions] = useState([]);
-  const [actorTypes, setActorTypes] = useState([]);
-  const [resourceTypes, setResourceTypes] = useState([]);
-  const [sensitivity, setSensitivity] = useState([]);
-  const [pii, setPii] = useState(false);
-  const [volume, setVolume] = useState('');
-  const [authn, setAuthn] = useState('required');
+export default function PolicyForm({ onSuccess, onCancel, policy = null }) {
+  const isEdit = policy !== null;
+
+  const [name, setName] = useState(isEdit ? policy.name : '');
+  const [tenantId, setTenantId] = useState(isEdit ? policy.tenant_id : '');
+  const [status, setStatus] = useState(isEdit ? policy.status : 'active');
+  const [policyType, setPolicyType] = useState(isEdit ? policy.policy_type : 'forbidden');
+  const [priority, setPriority] = useState(isEdit ? policy.priority : 0);
+
+  const [matchOp, setMatchOp] = useState(isEdit ? (policy.match?.op ?? '') : '');
+  const [matchT, setMatchT] = useState(isEdit ? (policy.match?.t ?? '') : '');
+  const [matchP, setMatchP] = useState(isEdit ? (policy.match?.p ?? '') : '');
+  const [matchCtx, setMatchCtx] = useState(isEdit ? (policy.match?.ctx ?? '') : '');
+
+  const [thresholds, setThresholds] = useState(
+    isEdit && policy.thresholds
+      ? { action: 0.85, resource: 0.85, data: 0.85, risk: 0.85, ...policy.thresholds }
+      : { action: 0.85, resource: 0.85, data: 0.85, risk: 0.85 }
+  );
+  const [scoringMode, setScoringMode] = useState(
+    isEdit && policy.weights ? 'weighted-avg' : 'min'
+  );
+  const [weights, setWeights] = useState(
+    isEdit && policy.weights
+      ? { action: 1.0, resource: 1.0, data: 1.0, risk: 1.0, ...policy.weights }
+      : { action: 1.0, resource: 1.0, data: 1.0, risk: 1.0 }
+  );
+
+  const [driftThreshold, setDriftThreshold] = useState(
+    isEdit && policy.drift_threshold != null ? String(policy.drift_threshold) : ''
+  );
+  const [notes, setNotes] = useState(isEdit ? (policy.notes ?? '') : '');
 
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState(null);
@@ -181,20 +184,16 @@ export default function PolicyForm({ onSuccess, onCancel }) {
     setThresholds((prev) => ({ ...prev, [key]: parseFloat(value) }));
   }
 
-  function toggleActorType(value) {
-    setActorTypes((prev) =>
-      prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value]
-    );
-  }
-
-  function getMultiSelectValues(e) {
-    return Array.from(e.target.selectedOptions).map((o) => o.value);
+  function setWeight(key, value) {
+    setWeights((prev) => ({ ...prev, [key]: parseFloat(value) }));
   }
 
   function validate() {
     const errors = {};
     if (!name.trim()) errors.name = 'Name is required.';
     if (!tenantId.trim()) errors.tenantId = 'Tenant ID is required.';
+    if (!matchOp.trim()) errors.matchOp = 'Operation is required.';
+    if (!matchT.trim()) errors.matchT = 'Target / Tool is required.';
     return errors;
   }
 
@@ -209,43 +208,54 @@ export default function PolicyForm({ onSuccess, onCancel }) {
     }
     setFieldErrors({});
 
-    const payload = {
-      id: crypto.randomUUID(),
-      name: name.trim(),
-      status,
-      type,
-      boundarySchemaVersion: 'v1.2',
-      scope: { tenantId: tenantId.trim() },
-      layer: layer || null,
-      rules: {
-        effect,
-        thresholds: { ...thresholds },
-        decision,
-      },
-      constraints: {
-        action: {
-          actions,
-          actor_types: actorTypes,
-        },
-        resource: {
-          types: resourceTypes,
-          names: [],
-          locations: [],
-        },
-        data: {
-          sensitivity,
-          pii,
-          volume: volume || null,
-        },
-        risk: {
-          authn,
-        },
-      },
+    const now = Date.now() / 1000;
+
+    const match = {
+      op: matchOp.trim(),
+      t: matchT.trim(),
     };
+    if (matchP.trim()) match.p = matchP.trim();
+    if (matchCtx.trim()) match.ctx = matchCtx.trim();
+
+    const payload = isEdit
+      ? {
+          id: policy.id,
+          name: name.trim(),
+          tenant_id: tenantId.trim(),
+          status,
+          policy_type: policyType,
+          priority,
+          match,
+          thresholds: { ...thresholds },
+          weights: scoringMode === 'weighted-avg' ? { ...weights } : null,
+          drift_threshold: driftThreshold !== '' ? parseFloat(driftThreshold) : null,
+          notes: notes.trim() || null,
+          created_at: policy.created_at,
+          updated_at: now,
+        }
+      : {
+          id: crypto.randomUUID(),
+          name: name.trim(),
+          tenant_id: tenantId.trim(),
+          status,
+          policy_type: policyType,
+          priority,
+          match,
+          thresholds: { ...thresholds },
+          weights: scoringMode === 'weighted-avg' ? { ...weights } : null,
+          drift_threshold: driftThreshold !== '' ? parseFloat(driftThreshold) : null,
+          notes: notes.trim() || null,
+          created_at: now,
+          updated_at: now,
+        };
 
     setSaving(true);
     try {
-      await createPolicy(payload);
+      if (isEdit) {
+        await updatePolicy(policy.id, payload);
+      } else {
+        await createPolicy(payload);
+      }
       onSuccess();
     } catch (err) {
       setSubmitError(err.message);
@@ -256,7 +266,7 @@ export default function PolicyForm({ onSuccess, onCancel }) {
 
   return (
     <div style={styles.panel}>
-      <div style={styles.panelTitle}>New Policy</div>
+      <div style={styles.panelTitle}>{isEdit ? 'Edit Policy' : 'New Policy'}</div>
       <form onSubmit={handleSubmit} noValidate>
 
         <fieldset style={styles.fieldset}>
@@ -272,6 +282,7 @@ export default function PolicyForm({ onSuccess, onCancel }) {
                 placeholder="Policy name"
               />
               {fieldErrors.name && <span style={styles.inlineError}>{fieldErrors.name}</span>}
+              <small style={styles.hint}>A human-readable label for this policy boundary.</small>
             </div>
             <div style={styles.field}>
               <label style={styles.label}>Tenant ID</label>
@@ -283,6 +294,7 @@ export default function PolicyForm({ onSuccess, onCancel }) {
                 placeholder="tenant-id"
               />
               {fieldErrors.tenantId && <span style={styles.inlineError}>{fieldErrors.tenantId}</span>}
+              <small style={styles.hint}>The tenant this policy applies to. Must match the tenant_id in incoming intent events.</small>
             </div>
             <div style={styles.field}>
               <label style={styles.label}>Status</label>
@@ -290,146 +302,184 @@ export default function PolicyForm({ onSuccess, onCancel }) {
                 <option value="active">active</option>
                 <option value="disabled">disabled</option>
               </select>
+              <small style={styles.hint}>Active policies are evaluated during enforcement. Disabled policies are stored but skipped.</small>
             </div>
             <div style={styles.field}>
-              <label style={styles.label}>Type</label>
-              <select style={styles.select} value={type} onChange={(e) => setType(e.target.value)}>
-                <option value="mandatory">mandatory</option>
-                <option value="optional">optional</option>
+              <label style={styles.label}>Policy Type</label>
+              <select style={styles.select} value={policyType} onChange={(e) => setPolicyType(e.target.value)}>
+                <option value="forbidden">forbidden</option>
+                <option value="context_allow">context_allow</option>
+                <option value="context_deny">context_deny</option>
+                <option value="context_defer">context_defer</option>
               </select>
+              <small style={styles.hint}>forbidden: always blocks regardless of context. context_allow: denied by default, allowed when context confirms intent. context_deny: allowed by default, blocked when context signals risk. context_defer: triggers DEFER when action is ambiguous or context is insufficient.</small>
             </div>
             <div style={styles.field}>
-              <label style={styles.label}>Layer</label>
-              <select style={styles.select} value={layer} onChange={(e) => setLayer(e.target.value)}>
-                <option value="">(none)</option>
-                {LAYERS.map((l) => (
-                  <option key={l} value={l}>{l}</option>
-                ))}
-              </select>
+              <label style={styles.label}>Priority</label>
+              <input
+                style={styles.input}
+                type="number"
+                value={priority}
+                onChange={(e) => setPriority(parseInt(e.target.value, 10) || 0)}
+                step={1}
+              />
+              <small style={styles.hint}>Lower number = higher priority. When multiple policies match, the lowest priority number wins.</small>
             </div>
           </div>
         </fieldset>
 
         <fieldset style={styles.fieldset}>
-          <legend style={styles.legend}>Rules</legend>
-          <div style={styles.grid}>
+          <legend style={styles.legend}>Match Anchors</legend>
+          <small style={{ ...styles.hint, marginBottom: 12 }}>Natural language descriptions of the action pattern this policy should match. The engine embeds these as semantic vectors and compares them against incoming intent events.</small>
+          <div style={styles.gridFull}>
             <div style={styles.field}>
-              <label style={styles.label}>Effect</label>
-              <select style={styles.select} value={effect} onChange={(e) => setEffect(e.target.value)}>
-                <option value="allow">allow</option>
-                <option value="deny">deny</option>
-              </select>
+              <label style={styles.label}>Operation (NL)</label>
+              <input
+                style={styles.input}
+                type="text"
+                value={matchOp}
+                onChange={(e) => setMatchOp(e.target.value)}
+                placeholder="e.g. read user records from database"
+              />
+              {fieldErrors.matchOp && <span style={styles.inlineError}>{fieldErrors.matchOp}</span>}
+              <small style={styles.hint}>Describe the action being performed. E.g. 'query a database', 'send an email', 'read a file'.</small>
             </div>
             <div style={styles.field}>
-              <label style={styles.label}>Decision</label>
-              <select style={styles.select} value={decision} onChange={(e) => setDecision(e.target.value)}>
-                <option value="min">min</option>
-                <option value="weighted-avg">weighted-avg</option>
-              </select>
+              <label style={styles.label}>Target / Tool (NL)</label>
+              <input
+                style={styles.input}
+                type="text"
+                value={matchT}
+                onChange={(e) => setMatchT(e.target.value)}
+                placeholder="e.g. postgres users table"
+              />
+              {fieldErrors.matchT && <span style={styles.inlineError}>{fieldErrors.matchT}</span>}
+              <small style={styles.hint}>Describe the resource or tool being accessed. E.g. 'postgres users table', 'Gmail API', 'S3 bucket'.</small>
             </div>
-          </div>
-          <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {['action', 'resource', 'data', 'risk'].map((key) => (
-              <div key={key} style={styles.field}>
-                <label style={styles.label}>Threshold: {key}</label>
-                <div style={styles.sliderRow}>
-                  <input
-                    style={styles.slider}
-                    type="range"
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    value={thresholds[key]}
-                    onChange={(e) => setThreshold(key, e.target.value)}
-                  />
-                  <span style={styles.sliderValue}>{thresholds[key].toFixed(2)}</span>
-                </div>
-              </div>
-            ))}
+            <div style={styles.field}>
+              <label style={styles.label}>Parameters (NL) — optional</label>
+              <input
+                style={styles.input}
+                type="text"
+                value={matchP}
+                onChange={(e) => setMatchP(e.target.value)}
+                placeholder="e.g. query includes email and name columns"
+              />
+              <small style={styles.hint}>Optional. Describe the parameter pattern to match. E.g. 'queries containing personal identifiers'. Leave blank to match any parameters.</small>
+            </div>
+            <div style={styles.field}>
+              <label style={styles.label}>Risk Context (NL) — optional</label>
+              <input
+                style={styles.input}
+                type="text"
+                value={matchCtx}
+                onChange={(e) => setMatchCtx(e.target.value)}
+                placeholder="e.g. accessed PII in the last 5 minutes"
+              />
+              <small style={styles.hint}>Optional. Describe the session context signal this policy reacts to. E.g. 'requests involving financial data'. Leave blank to ignore context.</small>
+            </div>
           </div>
         </fieldset>
 
         <fieldset style={styles.fieldset}>
-          <legend style={styles.legend}>Constraints</legend>
-          <div style={styles.grid}>
-            <div style={styles.field}>
-              <label style={styles.label}>Actions</label>
-              <select
-                style={styles.multiSelect}
-                multiple
-                value={actions}
-                onChange={(e) => setActions(getMultiSelectValues(e))}
-              >
-                {ACTION_OPTIONS.map((a) => (
-                  <option key={a} value={a}>{a}</option>
-                ))}
-              </select>
-            </div>
-            <div style={styles.field}>
-              <label style={styles.label}>Actor Types</label>
-              <div style={styles.checkboxGroup}>
-                {ACTOR_TYPE_OPTIONS.map((a) => (
-                  <label key={a} style={styles.checkboxLabel}>
-                    <input
-                      type="checkbox"
-                      checked={actorTypes.includes(a)}
-                      onChange={() => toggleActorType(a)}
-                    />
-                    {a}
-                  </label>
+          <legend style={styles.legend}>Thresholds &amp; Scoring</legend>
+
+          <div style={{ ...styles.field, marginBottom: 16 }}>
+            <label style={styles.label}>Scoring Mode</label>
+            <select style={styles.select} value={scoringMode} onChange={(e) => setScoringMode(e.target.value)}>
+              <option value="min">min</option>
+              <option value="weighted-avg">weighted-avg</option>
+            </select>
+            <small style={styles.hint}>
+              'min': each slice must independently exceed its own threshold — one failure blocks the match.<br />
+              'weighted-avg': similarities and thresholds are both weight-averaged into single scores, then compared — slices with higher weight have more influence on the outcome.
+            </small>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: '#555', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>Thresholds</div>
+              <small style={{ ...styles.hint, marginBottom: 12, display: 'block' }}>Minimum similarity per slice (0.0–1.0). Active in both modes — in weighted-avg they are averaged together with the weights.</small>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {['action', 'resource', 'data', 'risk'].map((key) => (
+                  <div key={key} style={styles.field}>
+                    <label style={styles.label}>Threshold: {key}</label>
+                    <div style={styles.sliderRow}>
+                      <input
+                        style={styles.slider}
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={thresholds[key]}
+                        onChange={(e) => setThreshold(key, e.target.value)}
+                      />
+                      <span style={styles.sliderValue}>{thresholds[key].toFixed(2)}</span>
+                    </div>
+                    <small style={styles.hint}>{key === 'action' ? 'Operation/action slice.' : key === 'resource' ? 'Target/resource slice.' : key === 'data' ? 'Parameters/data slice.' : 'Risk context slice.'}</small>
+                  </div>
                 ))}
               </div>
             </div>
-            <div style={styles.field}>
-              <label style={styles.label}>Resource Types</label>
-              <select
-                style={styles.multiSelect}
-                multiple
-                value={resourceTypes}
-                onChange={(e) => setResourceTypes(getMultiSelectValues(e))}
-              >
-                {RESOURCE_TYPE_OPTIONS.map((r) => (
-                  <option key={r} value={r}>{r}</option>
+
+            <div style={scoringMode === 'min' ? { opacity: 0.35, pointerEvents: 'none' } : {}}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: '#555', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>
+                Weights {scoringMode === 'min' && <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(not used in min mode)</span>}
+              </div>
+              <small style={{ ...styles.hint, marginBottom: 12, display: 'block' }}>Relative influence of each slice in weighted-avg mode. Higher weight = that slice pulls the combined score and threshold more.</small>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {['action', 'resource', 'data', 'risk'].map((key) => (
+                  <div key={key} style={styles.field}>
+                    <label style={styles.label}>Weight: {key}</label>
+                    <div style={styles.sliderRow}>
+                      <input
+                        style={styles.slider}
+                        type="range"
+                        min={0}
+                        max={2}
+                        step={0.1}
+                        value={weights[key]}
+                        onChange={(e) => setWeight(key, e.target.value)}
+                      />
+                      <span style={styles.sliderValue}>{weights[key].toFixed(1)}</span>
+                    </div>
+                  </div>
                 ))}
-              </select>
+              </div>
             </div>
+
+          </div>
+        </fieldset>
+
+        <fieldset style={styles.fieldset}>
+          <legend style={styles.legend}>Advanced</legend>
+          <div style={styles.grid}>
             <div style={styles.field}>
-              <label style={styles.label}>Data Sensitivity</label>
-              <select
-                style={styles.multiSelect}
-                multiple
-                value={sensitivity}
-                onChange={(e) => setSensitivity(getMultiSelectValues(e))}
-              >
-                {SENSITIVITY_OPTIONS.map((s) => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
+              <label style={styles.label}>Drift Threshold — optional (0.0–1.0)</label>
+              <input
+                style={styles.input}
+                type="number"
+                value={driftThreshold}
+                onChange={(e) => setDriftThreshold(e.target.value)}
+                placeholder="e.g. 0.3"
+                min={0}
+                max={1}
+                step={0.01}
+              />
+              <small style={styles.hint}>Optional. If the semantic distance between the agent's current action and the user's original request exceeds this value (0.0–1.0), the policy triggers a DEFER or STEP_UP. Leave blank to disable drift enforcement for this policy.</small>
             </div>
+          </div>
+          <div style={{ ...styles.gridFull, marginTop: 14 }}>
             <div style={styles.field}>
-              <label style={styles.label}>Volume</label>
-              <select style={styles.select} value={volume} onChange={(e) => setVolume(e.target.value)}>
-                <option value="">(none)</option>
-                <option value="single">single</option>
-                <option value="bulk">bulk</option>
-              </select>
-            </div>
-            <div style={styles.field}>
-              <label style={styles.label}>Risk: Authentication</label>
-              <select style={styles.select} value={authn} onChange={(e) => setAuthn(e.target.value)}>
-                <option value="required">required</option>
-                <option value="not_required">not_required</option>
-              </select>
-            </div>
-            <div style={styles.field}>
-              <label style={styles.checkboxLabel}>
-                <input
-                  type="checkbox"
-                  checked={pii}
-                  onChange={(e) => setPii(e.target.checked)}
-                />
-                PII
-              </label>
+              <label style={styles.label}>Notes — optional</label>
+              <textarea
+                style={styles.textarea}
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Additional context or notes about this policy"
+              />
+              <small style={styles.hint}>Optional free-text notes for your own reference. Not used during enforcement.</small>
             </div>
           </div>
         </fieldset>
@@ -450,7 +500,7 @@ export default function PolicyForm({ onSuccess, onCancel }) {
             style={saving ? styles.submitButtonDisabled : styles.submitButton}
             disabled={saving}
           >
-            {saving ? 'Saving...' : 'Create Policy'}
+            {saving ? 'Saving...' : isEdit ? 'Update Policy' : 'Create Policy'}
           </button>
         </div>
       </form>

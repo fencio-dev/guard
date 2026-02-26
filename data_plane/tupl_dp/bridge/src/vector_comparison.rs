@@ -8,12 +8,12 @@
 
 use crate::rule_vector::RuleVector;
 
-/// FFI-compatible structure for returning comparison results
-#[repr(C)]
+/// Structure for returning comparison results
 #[derive(Debug, Clone, Copy)]
 pub struct ComparisonResult {
-    pub decision: u8,                 // 0 = block, 1 = allow
-    pub slice_similarities: [f32; 4], // action, resource, data, risk
+    pub decision: u8,                    // 0 = block, 1 = allow
+    pub slice_similarities: [f32; 4],    // action, resource, data, risk
+    pub triggering_slice_idx: usize,     // index of argmax(sim_i * w_i), 0–3
 }
 
 /// Decision mode for rule enforcement
@@ -79,6 +79,7 @@ pub fn compare_intent_vs_rule(
     rule_vector: &RuleVector,
     thresholds: [f32; 4],
     decision_mode: DecisionMode,
+    weights: [f32; 4],
 ) -> ComparisonResult {
     let mut slice_similarities = [0.0f32; 4];
 
@@ -110,40 +111,58 @@ pub fn compare_intent_vs_rule(
         rule_vector.risk_count,
     );
 
+    // Compute triggering_slice_idx = argmax(sim_i * w_i), tiebreak: lower index wins
+    let weighted_contributions: [f32; 4] = [
+        slice_similarities[0] * weights[0],
+        slice_similarities[1] * weights[1],
+        slice_similarities[2] * weights[2],
+        slice_similarities[3] * weights[3],
+    ];
+    let mut triggering_slice_idx = 0usize;
+    let mut best = weighted_contributions[0];
+    for i in 1..4 {
+        if weighted_contributions[i] > best {
+            best = weighted_contributions[i];
+            triggering_slice_idx = i;
+        }
+    }
+
     // Decision logic based on mode
     let decision = match decision_mode {
         DecisionMode::MinMode => {
-            // Min-mode: All slices must meet their thresholds
             let all_pass = slice_similarities
                 .iter()
                 .zip(thresholds.iter())
                 .all(|(sim, thresh)| sim >= thresh);
 
-            if all_pass {
-                1
-            } else {
-                0
-            }
+            if all_pass { 1 } else { 0 }
         }
         DecisionMode::WeightedAvgMode => {
-            // Weighted-avg mode: Not used in current enforcement
-            // Kept for compatibility, defaults to min-mode behavior
-            let all_pass = slice_similarities
-                .iter()
-                .zip(thresholds.iter())
-                .all(|(sim, thresh)| sim >= thresh);
+            let weight_sum: f32 = weights.iter().sum();
+            let weight_sum = if weight_sum < 1e-8 { 1.0 } else { weight_sum };
 
-            if all_pass {
-                1
-            } else {
-                0
-            }
+            let weighted_score: f32 = slice_similarities
+                .iter()
+                .zip(weights.iter())
+                .map(|(sim, w)| sim * w)
+                .sum::<f32>()
+                / weight_sum;
+
+            let weighted_threshold: f32 = thresholds
+                .iter()
+                .zip(weights.iter())
+                .map(|(thresh, w)| thresh * w)
+                .sum::<f32>()
+                / weight_sum;
+
+            if weighted_score >= weighted_threshold { 1 } else { 0 }
         }
     };
 
     ComparisonResult {
         decision,
         slice_similarities,
+        triggering_slice_idx,
     }
 }
 
@@ -218,8 +237,13 @@ mod tests {
         };
 
         let thresholds = [0.85, 0.85, 0.85, 0.85];
-        let result =
-            compare_intent_vs_rule(&intent, &rule_vector, thresholds, DecisionMode::MinMode);
+        let result = compare_intent_vs_rule(
+            &intent,
+            &rule_vector,
+            thresholds,
+            DecisionMode::MinMode,
+            [0.25; 4],
+        );
         assert_eq!(result.decision, 1, "All slices should pass");
     }
 
@@ -243,8 +267,13 @@ mod tests {
         };
 
         let thresholds = [0.85, 0.85, 0.85, 0.85];
-        let result =
-            compare_intent_vs_rule(&intent, &rule_vector, thresholds, DecisionMode::MinMode);
+        let result = compare_intent_vs_rule(
+            &intent,
+            &rule_vector,
+            thresholds,
+            DecisionMode::MinMode,
+            [0.25; 4],
+        );
         assert_eq!(result.decision, 0, "Should block when one slice fails");
     }
 }

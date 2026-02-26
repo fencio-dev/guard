@@ -24,3 +24,13 @@ export async function createPolicy(data) {
   if (!res.ok) throw new Error(`Failed to create policy: ${res.status}`);
   return res.json();
 }
+
+export async function updatePolicy(id, data) {
+  const res = await fetch(`/api/v2/policies/${id}`, {
+    method: 'PUT',
+    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`Failed to update policy ${id}: ${res.status}`);
+  return res.json();
+}

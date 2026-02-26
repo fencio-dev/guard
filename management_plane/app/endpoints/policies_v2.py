@@ -13,8 +13,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.auth import User, get_current_tenant
 from app.settings import config
-from app.endpoints.enforcement_v2 import get_canonicalizer, get_policy_encoder
-from app.models import LooseDesignBoundary, PolicyClearResponse, PolicyDeleteResponse, PolicyListResponse, PolicyWriteRequest
+from app.endpoints.enforcement_v2 import get_policy_encoder
+from app.models import DesignBoundary, PolicyClearResponse, PolicyDeleteResponse, PolicyListResponse, PolicyWriteRequest
 from app.services import DataPlaneClient, DataPlaneError
 from app.chroma_client import delete_tenant_collection
 from app.services.policies import (
@@ -58,49 +58,43 @@ def _boundary_from_request(
     tenant_id: str,
     created_at: float,
     updated_at: float,
-) -> LooseDesignBoundary:
-    scope = request.scope.model_copy(update={"tenantId": tenant_id})
-    return LooseDesignBoundary(
+) -> DesignBoundary:
+    return DesignBoundary(
         id=request.id,
         name=request.name,
+        tenant_id=tenant_id,
         status=request.status,
-        type=request.type,
-        boundarySchemaVersion=request.boundarySchemaVersion,
-        scope=scope,
-        layer=request.layer,
-        rules=request.rules,
-        constraints=request.constraints,
+        policy_type=request.policy_type,
+        priority=request.priority,
+        match=request.match,
+        thresholds=request.thresholds,
+        weights=request.weights,
+        drift_threshold=request.drift_threshold,
+        modification_spec=request.modification_spec,
         notes=request.notes,
-        createdAt=created_at,
-        updatedAt=updated_at,
+        created_at=created_at,
+        updated_at=updated_at,
     )
 
 
 def _persist_anchor_payload(
     tenant_id: str,
-    boundary: LooseDesignBoundary,
-) -> None:
-    canonicalizer = get_canonicalizer()
+    boundary: DesignBoundary,
+) -> "RuleVector":
+    from app.services.policy_encoder import RuleVector
     policy_encoder = get_policy_encoder()
 
-    if not canonicalizer or not policy_encoder:
+    if not policy_encoder:
         raise HTTPException(status_code=500, detail="Service initialization failed")
 
     try:
-        canonicalized = canonicalizer.canonicalize_boundary(boundary)
-        canonical_boundary = canonicalized.canonical_boundary
-    except Exception as exc:
-        logger.error("Boundary canonicalization failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail="Canonicalization failed") from exc
-
-    try:
-        rule_vector = policy_encoder.encode(canonical_boundary)
+        rule_vector = policy_encoder.encode(boundary)
     except Exception as exc:
         logger.error("Policy encoding failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Policy encoding failed") from exc
 
     payload = {
-        "boundary": canonical_boundary.model_dump(),
+        "boundary": boundary.model_dump(),
         "anchors": build_anchor_payload(rule_vector),
     }
     metadata = cast(
@@ -109,8 +103,7 @@ def _persist_anchor_payload(
             "policy_id": boundary.id,
             "boundary_name": boundary.name,
             "status": boundary.status,
-            "policy_type": boundary.type,
-            "layer": boundary.layer or "",
+            "policy_type": boundary.policy_type,
         },
     )
 
@@ -120,12 +113,31 @@ def _persist_anchor_payload(
         logger.error("Failed to persist policy payload: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Policy payload storage failed") from exc
 
+    return rule_vector
 
-@router.post("", response_model=LooseDesignBoundary, status_code=status.HTTP_201_CREATED)
+
+def _install_to_dataplane(boundary: DesignBoundary, rule_vector: "RuleVector") -> None:
+    client = get_data_plane_client()
+    try:
+        client.install_policies([boundary], [rule_vector])
+        logger.info("Installed policy %s into data plane", boundary.id)
+    except DataPlaneError as exc:
+        logger.warning(
+            "Data plane install failed for policy %s (startup sync is recovery path): %s",
+            boundary.id, exc,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Unexpected error installing policy %s to data plane: %s",
+            boundary.id, exc,
+        )
+
+
+@router.post("", response_model=DesignBoundary, status_code=status.HTTP_201_CREATED)
 async def create_policy(
     request: PolicyWriteRequest,
     current_user: User = Depends(get_current_tenant),
-) -> LooseDesignBoundary:
+) -> DesignBoundary:
     request_id = str(uuid.uuid4())
     now = time.time()
     boundary = _boundary_from_request(request, current_user.id, now, now)
@@ -136,10 +148,12 @@ async def create_policy(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     try:
-        _persist_anchor_payload(current_user.id, boundary)
+        rule_vector = _persist_anchor_payload(current_user.id, boundary)
     except HTTPException:
         delete_policy_record(current_user.id, boundary.id)
         raise
+
+    _install_to_dataplane(boundary, rule_vector)
 
     _write_policy_audit({
         "ts": now,
@@ -160,30 +174,30 @@ async def list_policies(
     return PolicyListResponse(policies=policies)
 
 
-@router.get("/{policy_id}", response_model=LooseDesignBoundary, status_code=status.HTTP_200_OK)
+@router.get("/{policy_id}", response_model=DesignBoundary, status_code=status.HTTP_200_OK)
 async def get_policy(
     policy_id: str,
     current_user: User = Depends(get_current_tenant),
-) -> LooseDesignBoundary:
+) -> DesignBoundary:
     policy = fetch_policy_record(current_user.id, policy_id)
     if not policy:
         raise HTTPException(status_code=404, detail="Policy not found")
     return policy
 
 
-@router.put("/{policy_id}", response_model=LooseDesignBoundary, status_code=status.HTTP_200_OK)
+@router.put("/{policy_id}", response_model=DesignBoundary, status_code=status.HTTP_200_OK)
 async def update_policy(
     policy_id: str,
     request: PolicyWriteRequest,
     current_user: User = Depends(get_current_tenant),
-) -> LooseDesignBoundary:
+) -> DesignBoundary:
     request_id = str(uuid.uuid4())
     existing = fetch_policy_record(current_user.id, policy_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Policy not found")
 
     now = time.time()
-    boundary = _boundary_from_request(request, current_user.id, existing.createdAt, now)
+    boundary = _boundary_from_request(request, current_user.id, existing.created_at, now)
     if boundary.id != policy_id:
         raise HTTPException(status_code=400, detail="Policy ID mismatch")
 
@@ -192,7 +206,8 @@ async def update_policy(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    _persist_anchor_payload(current_user.id, boundary)
+    rule_vector = _persist_anchor_payload(current_user.id, boundary)
+    _install_to_dataplane(boundary, rule_vector)
     _write_policy_audit({
         "ts": now,
         "request_id": request_id,

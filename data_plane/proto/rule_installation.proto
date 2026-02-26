@@ -128,6 +128,8 @@ message RuleInstance {
   float drift_threshold = 11;
   // JSON key/value patch applied when policy is MODIFY; empty otherwise
   string modification_spec = 12;
+  // 4-element weight vector [action, resource, data, risk]; empty = uniform
+  repeated float slice_weights = 13;
 }
 
 // Parameter value (supports multiple types)
@@ -193,6 +195,8 @@ message RuleEvidence {
   string rule_name = 2;
   int32 decision = 3;  // 0 = blocked, 1 = passed
   repeated float similarities = 4;  // Per-slot scores
+  string triggering_slice = 5;  // Name of the slice with highest weighted contribution
+  string anchor_matched = 6;    // Raw anchor text of the best-matching anchor in triggering slice
 }
 
 // Request to query telemetry sessions

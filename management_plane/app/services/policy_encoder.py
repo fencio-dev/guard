@@ -32,13 +32,8 @@ from typing import Tuple
 import numpy as np
 
 from app.models import DesignBoundary
+from app.services.param_canonicalizer import canonicalize_params
 from app.services.semantic_encoder import SemanticEncoder
-from app.services.canonical_slots import (
-    serialize_action_slot,
-    serialize_resource_slot,
-    serialize_data_slot,
-    serialize_risk_slot,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -131,104 +126,61 @@ class PolicyEncoder(SemanticEncoder):
         """
         Extract anchor strings for action layer.
 
-        One anchor per (action, actor_type) combination.
+        Uses NL match.op as the action anchor.
 
         Args:
-            boundary: Canonical DesignBoundary
+            boundary: DesignBoundary
 
         Returns:
             List of anchor strings
         """
-        anchors = []
-        for action in sorted(boundary.constraints.action.actions):
-            for actor_type in sorted(boundary.constraints.action.actor_types):
-                anchors.append(serialize_action_slot(action, actor_type))
-        return anchors
+        return [boundary.match.op]
 
     def _extract_resource_anchors(self, boundary: DesignBoundary) -> list[str]:
         """
         Extract anchor strings for resource layer.
 
-        One anchor per (type, location) and per resource_name.
+        Uses NL match.t as the resource anchor.
 
         Args:
-            boundary: Canonical DesignBoundary
+            boundary: DesignBoundary
 
         Returns:
             List of anchor strings
         """
-        anchors = []
-
-        types = sorted(boundary.constraints.resource.types)
-        locations = (
-            sorted(boundary.constraints.resource.locations)
-            if boundary.constraints.resource.locations
-            else [None]
-        )
-        names = (
-            sorted(boundary.constraints.resource.names)
-            if boundary.constraints.resource.names
-            else [None]
-        )
-
-        for rtype in types:
-            for location in locations:
-                for name in names:
-                    anchors.append(
-                        serialize_resource_slot(
-                            rtype,
-                            resource_name=name,
-                            resource_location=location,
-                        )
-                    )
-
-        return anchors
+        return [boundary.match.t]
 
     def _extract_data_anchors(self, boundary: DesignBoundary) -> list[str]:
         """
         Extract anchor strings for data layer.
 
-        One anchor per (sensitivity, pii, volume) combination.
+        Uses NL match.p as the data anchor.
 
         Args:
-            boundary: Canonical DesignBoundary
+            boundary: DesignBoundary
 
         Returns:
             List of anchor strings
         """
-        anchors = []
-
-        sensitivities = sorted(boundary.constraints.data.sensitivity)
-        pii_values = [boundary.constraints.data.pii] if boundary.constraints.data.pii is not None else [True, False]
-        volumes = [boundary.constraints.data.volume] if boundary.constraints.data.volume else ["single", "bulk"]
-
-        for sensitivity in sensitivities:
-            for pii in pii_values:
-                for volume in volumes:
-                    anchors.append(
-                        serialize_data_slot(
-                            sensitivity,
-                            pii=pii,
-                            volume=volume,
-                        )
-                    )
-
-        return anchors
+        if boundary.match.p:
+            return [canonicalize_params(boundary.match.p)]
+        return []
 
     def _extract_risk_anchors(self, boundary: DesignBoundary) -> list[str]:
         """
-        Extract anchor strings for risk layer.
+        Extract anchor strings for risk/context layer.
 
-        One anchor per authn requirement.
+        Uses NL match.ctx as the risk anchor.
 
         Args:
-            boundary: Canonical DesignBoundary
+            boundary: DesignBoundary
 
         Returns:
             List of anchor strings
         """
-        authn = boundary.constraints.risk.authn
-        return [serialize_risk_slot(authn)]
+        if boundary.match.ctx:
+            return [boundary.match.ctx]
+        return []
 
     def _encode_anchors(self, anchor_texts: list[str], layer_name: str) -> Tuple[np.ndarray, int]:
         """

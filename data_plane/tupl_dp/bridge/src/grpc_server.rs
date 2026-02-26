@@ -206,6 +206,14 @@ impl DataPlane for DataPlaneService {
                 policy_type: proto_rule.policy_type.clone(),
                 drift_threshold: proto_rule.drift_threshold,
                 modification_spec: proto_rule.modification_spec.clone(),
+                slice_weights: {
+                    let w = &proto_rule.slice_weights;
+                    if w.len() == 4 {
+                        [w[0], w[1], w[2], w[3]]
+                    } else {
+                        [0.25, 0.25, 0.25, 0.25]
+                    }
+                },
                 params: proto_rule
                     .params
                     .into_iter()
@@ -537,6 +545,8 @@ impl DataPlane for DataPlaneService {
                     rule_name: ev.rule_name.clone(),
                     decision: ev.decision as i32,
                     similarities: ev.similarities.to_vec(),
+                    triggering_slice: ev.triggering_slice.clone(),
+                    anchor_matched: ev.anchor_matched.clone(),
                 })
                 .collect(),
             request_id: result.session_id.clone(),
@@ -745,6 +755,7 @@ fn convert_design_boundary_rule(
         policy_type,
         cp_rule.drift_threshold,
         modification_spec,
+        cp_rule.slice_weights,
     )) as Arc<dyn RuleInstance>)
 }
 

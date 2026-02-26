@@ -11,7 +11,7 @@ from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, Field, ValidationError
 
-from app.models import Actor, LooseData, LooseIntentEvent, LooseResource, Risk
+from app.models import AgentIdentity, IntentEvent
 
 from .auth import authenticate_request
 from .app import mcp
@@ -56,7 +56,7 @@ def _build_rationale(decision: str) -> str:
 
 
 async def _call_enforce(
-    event: LooseIntentEvent,
+    event: IntentEvent,
     headers: dict[str, str],
 ) -> dict[str, Any]:
     management_plane_url = os.getenv("MANAGEMENT_PLANE_URL")
@@ -109,24 +109,23 @@ async def send_intent(
     logger.info("send_intent called")
     auth_context = await authenticate_request(ctx)
 
-    layer = _resolve_layer(context)
     tool_context = _resolve_tool_context(context)
 
     try:
-        event = LooseIntentEvent(
+        event = IntentEvent(
+            event_type="tool_call",
             id=str(uuid.uuid4()),
-            tenantId=auth_context.tenant_id,
-            timestamp=time.time(),
-            actor=Actor(id="llm-agent", type="agent"),
-            action=action,
-            resource=LooseResource(**resource),
-            data=LooseData(**data),
-            risk=Risk(**risk),
-            context=context,
-            layer=layer,
-            tool_name=tool_context.get("tool_name"),
-            tool_method=tool_context.get("tool_method"),
-            tool_params=tool_context.get("tool_params"),
+            tenant_id=auth_context.tenant_id,
+            ts=time.time(),
+            identity=AgentIdentity(
+                agent_id=tool_context.get("tool_name") or "mcp-agent",
+                principal_id="mcp-agent",
+                actor_type="agent",
+            ),
+            op=action,
+            t=resource.get("name") or resource.get("type") or str(resource),
+            p=data.get("description") if isinstance(data, dict) else None,
+            params=tool_context if tool_context else None,
         )
     except ValidationError as exc:
         raise ToolError(f"Invalid intent payload: {exc}") from exc

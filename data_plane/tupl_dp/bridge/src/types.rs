@@ -155,6 +155,11 @@ pub trait RuleInstance: Send + Sync {
     fn modification_spec(&self) -> Option<&serde_json::Value> {
         None
     }
+
+    /// Per-slice weights [action, resource, data, risk] used for weighted-average scoring.
+    fn slice_weights(&self) -> [f32; 4] {
+        [0.25, 0.25, 0.25, 0.25]
+    }
 }
 
 impl fmt::Debug for dyn RuleInstance {
