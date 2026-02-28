@@ -10,7 +10,7 @@ Prism is a local policy enforcement stack with:
 
 ```bash
 git clone <repository-url>
-cd guard
+cd prism
 
 # Backend stack: data plane + MCP server + management plane
 make run-all
